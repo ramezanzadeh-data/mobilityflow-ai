@@ -22,7 +22,12 @@ celery_app = Celery(
         "workers.ai_tasks",
         "workers.email_tasks",
         "workers.pdf_tasks",
-        "workers.notification_tasks",
+        # workers.notification_tasks is gone. It published webhook
+        # deliveries straight from the request path, bypassing the
+        # outbox; keeping it would have left the old defect one import
+        # away. tests/test_webhook_outbox_is_the_only_path.py fails if it
+        # comes back.
+        "workers.outbox_tasks",
     ],
 )
 
@@ -91,6 +96,38 @@ celery_app.conf.update(
             "interval_start": 0,
             "interval_step": 0.2,
             "interval_max": 0.5,
+        },
+    },
+
+    # ---------------------------------------------------------------
+    # The outbox relay.
+    #
+    # Every ten seconds, because this interval is the delay a customer
+    # sees on a normal notification - the row is written the moment the
+    # case event commits and waits only for the next sweep. Cheap: the
+    # query is an index scan over a partial index of PENDING rows, which
+    # is empty most of the time.
+    #
+    # Scheduled rather than published on demand. If an event had to
+    # publish a task to trigger its own delivery, a broker outage would
+    # again leave a queued notification with nobody coming back for it -
+    # the failure the outbox exists to remove. A sweep depends only on
+    # the database.
+    #
+    # Requires a `celery beat` process; docker-compose.yml runs one. With
+    # no beat running, rows accumulate and are delivered whenever one is
+    # started - late, but never lost.
+    # ---------------------------------------------------------------
+    beat_schedule={
+        "deliver-webhook-outbox": {
+            "task": "workers.outbox_tasks.deliver_webhook_outbox",
+            "schedule": 10.0,
+            "options": {
+                # Dropped if it cannot run within one interval. The next
+                # sweep would do the same work, so a backlog of identical
+                # sweeps is pure waste.
+                "expires": 9.0,
+            },
         },
     },
 )

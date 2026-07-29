@@ -146,7 +146,7 @@ def test_a_dead_broker_fails_fast_rather_than_hanging(monkeypatch):
     started = time.monotonic()
 
     try:
-        celery_app.send_task("workers.notification_tasks.dispatch_webhook")
+        celery_app.send_task("workers.outbox_tasks.deliver_webhook_outbox")
     except Exception:  # noqa: BLE001 - failing is fine; hanging is not
         pass
 

@@ -51,10 +51,18 @@ REQUIRED_COLUMNS = {
     "tenant_value_assumptions": {
         "platform_cost_per_month": "0004_platform_cost",
     },
+    "webhook_outbox": {
+        "next_attempt_at": "0005_webhook_outbox",
+        "last_status_code": "0005_webhook_outbox",
+    },
 }
 
 REQUIRED_TABLES = {
     "tenant_value_assumptions": "0002_tenant_value_assumptions",
+    # Without this table log_case_event() cannot record the notifications
+    # a committed event owes, and the failure would appear on the user's
+    # first case creation rather than at startup.
+    "webhook_outbox": "0005_webhook_outbox",
 }
 
 
