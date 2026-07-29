@@ -160,6 +160,27 @@ jobs:
           --health-timeout 5s
           --health-retries 20
 
+      # Present because a deployment has it, not because a test asserts
+      # on it. db.database.log_case_event() publishes a webhook task on
+      # every case event; with no broker reachable, Celery's default
+      # result-backend retry_policy spends twenty seconds retrying before
+      # giving up. Nothing fails - the call is wrapped - but every run
+      # paid twenty seconds and filled the log with connection errors.
+      #
+      # Providing the broker is the honest fix for CI. The twenty-second
+      # block itself is an application defect and is fixed separately in
+      # workers/celery_app.py; CI should mirror a deployment, not stand
+      # in for a code change.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     env:
       # No .env exists in CI. bootstrap.load_environment treats that as
       # normal and these variables supply the configuration directly -
@@ -169,6 +190,8 @@ jobs:
       PGUSER: mobilityflow
       PGPASSWORD: ci-only-not-a-real-secret
       PGDATABASE: mobilityflow
+
+      REDIS_URL: redis://localhost:6379/0
 
       # conftest.py derives "<database>_test" by default. Naming it
       # explicitly documents, in the run's own configuration, that the
@@ -193,6 +216,36 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # conftest.py redirects the suite to <database>_test and creates it
+      # itself, so the application database stays empty unless something
+      # builds it. On a developer machine it is never empty, which is why
+      # this was not needed until the database-backed tests first ran
+      # here.
+      #
+      # tests/test_database_isolation.py connects to the application
+      # database directly to prove no test row reached it. Against an
+      # empty database that query cannot run at all:
+      #
+      #     psycopg2.errors.UndefinedTable: relation "cases" does not exist
+      #
+      # Making the test tolerate a missing table would be the wrong fix -
+      # it would pass vacuously wherever the application database has no
+      # schema, which is precisely the kind of test that proves nothing.
+      # So CI installs the application database the way a deployment
+      # does, and the isolation test then compares two real schemas.
+      - name: Install the application database
+        env:
+          # Needed only by this step: init_db() finishes by creating the
+          # bootstrap administrator. Throwaway values for a database that
+          # exists for the length of one job. pytest does not use them -
+          # conftest.py supplies its own test-only values.
+          DEFAULT_ADMIN_USERNAME: ci-admin
+          DEFAULT_ADMIN_PASSWORD: ci-only-not-a-real-secret
+          DEFAULT_ADMIN_COMPANY: CI Company
+          JWT_SECRET_KEY: ci-only-jwt-secret-not-used-outside-this-job-0123456789
+          ENCRYPTION_KEY: DpzHVAf8GUh5obKUI1pqjRhwv9io37RSsETHVdcrUcc=
+        run: python -m scripts.migrate
 
       # The suite skips database-backed modules when Postgres is
       # unreachable, which is right on a laptop and wrong here: in CI
