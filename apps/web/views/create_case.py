@@ -5,6 +5,7 @@ from core.case.service import (
     update_case_service
 )
 
+from core.cantons import supported_cantons
 from core.rules.risk import calculate_risk_from_rules
 from core.documents.intake import generate_summary
 
@@ -68,7 +69,11 @@ def show_create_case():
 
         employee_name_default = ""
         nationality_default = "EU"
-        canton_default = "VAUD"
+        # The first covered canton, not a name typed in here. While this
+        # was hardcoded it read "VAUD" - a canton with no knowledge base,
+        # so every new case defaulted to the one the product could say
+        # least about.
+        canton_default = (supported_cantons() or [""])[0]
         permit_default = "NO_PERMIT"
         mode_default = "SME"
         employer_default = ""
@@ -104,7 +109,20 @@ def show_create_case():
         )
 
     nationality_options = ["EU", "NON_EU"]
-    canton_options = ["VAUD", "VALAIS"]
+
+    # Derived, never listed here. Offering a canton the rules engine has
+    # no knowledge base for produced a workflow, a risk score and a
+    # document checklist that looked exactly as authoritative as a
+    # covered one - see core/cantons.py.
+    canton_options = list(supported_cantons())
+
+    # An existing case in a canton that is no longer covered still has to
+    # open and save. Its own value is added to the options so the select
+    # box can show it; the canton itself remains unofferable to new cases
+    # because it is not in supported_cantons().
+    if canton_default and canton_default not in canton_options:
+        canton_options = canton_options + [canton_default]
+
     permit_list = ["NO_PERMIT", "N", "F", "S", "L", "B", "C", "G"]
     mode_list = ["SME", "RELOCATION", "RECRUITMENT"]
 
@@ -293,9 +311,6 @@ def show_create_case():
 
         if canton == "VALAIS":
             docs.append("Commune Registration")
-
-        if canton == "VAUD":
-            docs.append("Residence Registration")
 
 
         if edit_case_id:

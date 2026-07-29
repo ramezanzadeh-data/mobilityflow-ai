@@ -28,10 +28,17 @@ from apps.web.utils.validators import (
     MAXIMUM_NAME_LENGTH,
     validate_case_form,
 )
+from core.cantons import supported_cantons
 
 
 NATIONALITIES = ["EU", "NON_EU"]
-CANTONS = ["VAUD", "VALAIS"]
+
+# Derived, not listed. The validator takes its vocabulary from the
+# caller, and the caller is the case form - so a test that invents its
+# own canton list can pass while the form offers something else entirely.
+# It read ["VAUD", "VALAIS"] while Vaud had no knowledge base at all.
+CANTONS = list(supported_cantons())
+
 PERMITS = ["NO_PERMIT", "N", "F", "S", "L", "B", "C", "G"]
 MODES = ["SME", "RELOCATION", "RECRUITMENT"]
 
@@ -43,7 +50,7 @@ def check(employee_name="Anna Müller", employer="Lonza AG", **overrides):
         "employee_name": employee_name,
         "employer": employer,
         "nationality": "EU",
-        "canton": "VAUD",
+        "canton": CANTONS[0],
         "permit": "B",
         "business_mode": "SME",
         "valid_nationalities": NATIONALITIES,

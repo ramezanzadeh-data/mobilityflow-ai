@@ -25,6 +25,11 @@ from i18n.translator import DEFAULT_LANGUAGE, normalize_language
 
 
 CANTON_LABELS = {
+    # Vaud is kept although the product no longer covers it. Cases
+    # created while it was on the menu still exist, and a record that
+    # displays its canton as a raw code - or not at all - is a record the
+    # customer cannot recognise. Coverage is decided in core/cantons.py;
+    # this table only says how a code is written in each language.
     "en": {"VAUD": "Vaud", "VALAIS": "Valais"},
     # Canton names are proper nouns, but each has an endonym in the
     # relevant language and Swiss users expect their own.

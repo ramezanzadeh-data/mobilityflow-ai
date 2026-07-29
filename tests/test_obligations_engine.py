@@ -344,3 +344,52 @@ def test_the_shipped_rules_are_all_marked_unverified():
                 f"'{obligation.id}' is unverified and does not say why. "
                 f"An unexplained gap cannot be closed by anyone."
             )
+
+
+def test_every_shipped_rule_names_the_canton_it_was_written_for():
+    """
+    A guard on the real data file.
+
+    The engine reads ``"cantons": null`` as "applies everywhere", and all
+    three shipped rules carried it - written while the product presented
+    itself as canton-agnostic. Left alone, the first canton to get a
+    knowledge base would silently inherit three Valais deadlines, worded
+    exactly as confidently, with no review behind them for that canton.
+
+    A deadline reviewed for one canton is evidence about that canton and
+    nothing else. Every rule must therefore say which one, and it must be
+    a canton the product actually covers - a rule scoped to a canton with
+    no knowledge base can never be reached, which is a rule nobody will
+    notice is wrong.
+    """
+
+    import json
+    from pathlib import Path
+
+    from core.cantons import supported_cantons
+
+    path = Path(__file__).resolve().parent.parent / "data" / "obligations.json"
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    covered = set(supported_cantons())
+
+    for rule in data["obligations"]:
+
+        cantons = rule["applies_to"]["cantons"]
+
+        assert cantons, (
+            f"'{rule['id']}' has no canton scope, so the engine applies it "
+            f"to every canton - including ones nobody reviewed it for. "
+            f"Name the canton it was written for."
+        )
+
+        unknown = set(cantons) - covered
+
+        assert not unknown, (
+            f"'{rule['id']}' is scoped to {sorted(unknown)}, which the "
+            f"product does not cover. Either add the knowledge base "
+            f"(data/canton_<code>_rules.json) or remove the scope - as it "
+            f"stands the rule can never fire, so nobody will ever notice "
+            f"if it is wrong."
+        )

@@ -36,13 +36,19 @@ def calculate_risk_from_rules(case):
         breakdown.append(f"+{permit_scores[permit]} Permit {permit}")
 
 
+    # Only cantons the product actually covers contribute a score.
+    #
+    # There used to be an `elif canton == "VAUD": score += 5` here. Vaud
+    # has no knowledge base in data/, so that five came from nowhere -
+    # and a risk score assembled partly from invented numbers is not a
+    # weaker score, it is a different kind of object. Nothing on screen
+    # distinguished it from the Valais figure.
+    #
+    # An uncovered canton now contributes nothing and says so, which is
+    # the honest answer: the product has no view on it.
     if canton == "VALAIS":
         score += 10
         breakdown.append("+10 Valais compliance")
-
-    elif canton == "VAUD":
-        score += 5
-        breakdown.append("+5 Vaud process")
 
 
     if business_mode == "RELOCATION":

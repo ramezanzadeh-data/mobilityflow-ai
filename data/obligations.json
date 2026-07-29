@@ -4,30 +4,33 @@
     "purpose": "Statutory and administrative obligations with a deadline, used by core/rules/obligations.py to turn a case into a dated action list.",
     "disclaimer": "⚠️ LEGAL VERIFICATION REQUIRED. Every rule in this file is UNVERIFIED unless its own 'verification' block says otherwise. These are procedural structures drawn from general knowledge of the Swiss immigration system, not from live official sources, and they are not legal advice. A missed immigration deadline has consequences for a real person's right to live and work in Switzerland - no rule here may be relied on for a real case until a licensed Swiss immigration specialist has reviewed it and recorded that review below.",
     "how_to_verify": "For each rule: confirm the deadline and its legal basis against the canton's official migration office and the federal SEM, then set verification.status to 'verified', fill reviewed_by, reviewed_on and source_url, and record the exact provision in legal_basis.",
-    "why_rules_are_data": "Immigration deadlines change, differ per canton, and must be auditable. Holding them as data rather than in code means a specialist can review a diff, a customer can be shown exactly which rule produced a date, and a change does not require a release."
+    "why_rules_are_data": "Immigration deadlines change, differ per canton, and must be auditable. Holding them as data rather than in code means a specialist can review a diff, a customer can be shown exactly which rule produced a date, and a change does not require a release.",
+    "scope": "Canton Valais only. Every rule here is scoped to VALAIS explicitly rather than left null ('applies everywhere'): a deadline reviewed for one canton is evidence about that canton and nothing else. Adding a canton means adding its own rules and having them reviewed separately - see core/cantons.py."
   },
-
   "verification_statuses": {
     "verified": "Checked against an official source by a named reviewer on a recorded date.",
     "unverified": "Structure is plausible but nothing has been confirmed. Shown to users with a warning; must not be presented as legal advice.",
     "superseded": "Known to be out of date. Retained so historical cases can still explain the date they were given."
   },
-
   "trigger_dates": {
     "arrival_date": "The day the employee physically arrives in Switzerland.",
     "contract_start_date": "First day of the employment contract.",
     "permit_expiry_date": "Expiry printed on the current permit.",
     "case_created_date": "When the case was opened in this system. A fallback only - it is an internal event, not a legal one, and any deadline derived from it is an estimate."
   },
-
   "obligations": [
     {
       "id": "commune_registration",
       "title": "Register at the commune (Contrôle des habitants)",
       "description": "New residents must register in person at their commune's residents' registration office.",
       "applies_to": {
-        "cantons": ["VALAIS", "VAUD"],
-        "nationalities": ["EU", "NON_EU"],
+        "cantons": [
+          "VALAIS"
+        ],
+        "nationalities": [
+          "EU",
+          "NON_EU"
+        ],
         "permits": null,
         "business_modes": null
       },
@@ -49,9 +52,17 @@
       "title": "Submit permit renewal application",
       "description": "A renewal application should be filed well before the current permit expires, so the holder is not left without valid status while it is processed.",
       "applies_to": {
-        "cantons": null,
-        "nationalities": ["EU", "NON_EU"],
-        "permits": ["B", "L"],
+        "cantons": [
+          "VALAIS"
+        ],
+        "nationalities": [
+          "EU",
+          "NON_EU"
+        ],
+        "permits": [
+          "B",
+          "L"
+        ],
         "business_modes": null
       },
       "trigger": "permit_expiry_date",
@@ -72,8 +83,12 @@
       "title": "Confirm the permit is in place before employment starts",
       "description": "Employment should not begin before the required authorisation is in place.",
       "applies_to": {
-        "cantons": null,
-        "nationalities": ["NON_EU"],
+        "cantons": [
+          "VALAIS"
+        ],
+        "nationalities": [
+          "NON_EU"
+        ],
         "permits": null,
         "business_modes": null
       },

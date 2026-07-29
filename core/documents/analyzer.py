@@ -26,12 +26,13 @@ def analyze_documents(case, documents):
             risks.append("NON-EU compliance risk: visa missing")
 
 
+    # See core/cantons.py. The Vaud line removed from here asserted a
+    # "strict onboarding timeline" that no source in this repository
+    # establishes - a compliance claim invented in a docstring-free
+    # if-statement and shown to the user as a risk.
     if canton == "VALAIS":
         missing.append("Commune Registration Form")
         risks.append("Valais requires commune registration")
-
-    if canton == "VAUD":
-        risks.append("Vaud canton requires strict onboarding timeline")
 
 
     if permit == "B":
