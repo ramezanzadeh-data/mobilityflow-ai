@@ -7,9 +7,12 @@ from typing import Optional
 # docker-compose.yml (OLLAMA_HOST=http://host.docker.internal:11434)
 # so the containers reach Ollama on the host; when the app runs
 # directly on a developer machine the default below is used.
-# The same variable is read natively by the `ollama` Python client
-# (core/ai/engine.py, core/communication/templates.py), so a single
-# environment variable configures every Ollama caller in the project.
+#
+# This module is now the only Ollama caller in the project: core/ai/engine.py
+# delegates here and core/ai/agent/ calls chat() directly. The `ollama`
+# client package is deliberately not used - it disables the HTTP timeout,
+# so a backend that stopped responding blocked the caller indefinitely.
+# See tests/test_ai_client_boundary.py, which fails if it returns.
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "llama3.1"
 REQUEST_TIMEOUT_SECONDS = 120

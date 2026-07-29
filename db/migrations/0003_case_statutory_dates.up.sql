@@ -1,10 +1,14 @@
 -- =====================================================================
 -- Migration 0003 (up): record the dates statutory deadlines depend on.
 --
--- NOT YET APPLIED. db.database.init_db() does not reference this file.
--- Applying it is a deliberate decision - review the type choice below
--- before you do, because it is the one thing here that is awkward to
--- change later.
+-- Applied by db.database._migrate_case_statutory_dates() during
+-- init_db(), and available standalone through scripts/migrate.py.
+--
+-- Ordering requirement: the two indexes at the bottom of this file are
+-- keyed on cases.tenant_id, so _migrate_add_tenant_id_columns() must
+-- have run first. init_db() now does that before any other migration -
+-- when it did not, this file was the statement that failed on every
+-- empty database.
 --
 -- Why
 -- ---

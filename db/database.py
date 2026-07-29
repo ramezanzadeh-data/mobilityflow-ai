@@ -1,5 +1,7 @@
 import os
 import contextvars
+import json
+import logging
 from collections import namedtuple
 from contextlib import contextmanager
 
@@ -7,6 +9,10 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import SimpleConnectionPool
 
+
+# Named for this module, so an operator can raise or lower the verbosity
+# of database-layer messages without touching anything else.
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -348,6 +354,26 @@ def init_db():
         )
         """)
 
+        # tenant_id comes first, before any other migration runs.
+        #
+        # It is the one column the rest of this function builds on:
+        # migration 0003 creates indexes on cases (tenant_id, ...) and
+        # _enable_row_level_security() writes the tenant_isolation policy
+        # against it on every table in _RLS_TABLES. Anything below may
+        # reference it, so nothing below can run before it exists.
+        #
+        # This used to sit five lines further down, which passed on every
+        # existing database - there tenant_id predates all of these
+        # migrations - and failed on every empty one with
+        #
+        #     psycopg2.errors.UndefinedColumn:
+        #     column "tenant_id" does not exist
+        #
+        # i.e. it worked everywhere except a customer's first deployment.
+        # scripts/verify_fresh_install.py is what catches that class of
+        # ordering defect, and CI runs it on every commit.
+        _migrate_add_tenant_id_columns(c)
+
         _migrate_documents_table(c)
         _migrate_tasks_table(c)
         _migrate_users_table(c)
@@ -356,7 +382,9 @@ def init_db():
         # applies the tenant_isolation policy to every table in
         # _RLS_TABLES, and this one is in that list.
         _migrate_tenant_value_assumptions(c)
-        _migrate_add_tenant_id_columns(c)
+        # Also in _RLS_TABLES, and its foreign key needs `webhooks` to
+        # exist - which it does, from the CREATE TABLE block above.
+        _migrate_webhook_outbox(c)
         _enable_row_level_security(c)
         _seed_default_rbac(c)
 
@@ -448,6 +476,18 @@ def _migrate_users_table(c):
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled INTEGER DEFAULT 0")
 
 
+def _migrate_webhook_outbox(c):
+    """
+    Create the transactional outbox that webhook delivery runs through.
+
+    See the migration file for why the previous design - commit the case
+    event, then publish to the broker on the next line - could lose a
+    notification with nothing recording that it had been owed.
+    """
+
+    c.execute(_read_migration("0005_webhook_outbox.up.sql"))
+
+
 _TENANT_SCOPED_TABLES = [
     "cases",
     "tasks",
@@ -489,6 +529,9 @@ _RLS_TABLES = [
     # Registered here rather than carrying its own policy so there is one
     # definition of tenant_isolation - see the migration file.
     "tenant_value_assumptions",
+    # Rows carry the full case payload that was, or is about to be, sent
+    # to a customer's endpoint. Everything true of `cases` is true here.
+    "webhook_outbox",
 ]
 
 
@@ -942,8 +985,25 @@ def set_must_change_password(username, value=True):
 
 
 def log_case_event(case_id, event_type, description):
+    """
+    Record a case event and queue the notifications it owes.
+
+    Both happen in one transaction. That is the whole point: a committed
+    event always has its outbox rows, and an event that rolls back leaves
+    none behind.
+
+    The previous version committed the event and then published to Celery
+    on the next line. Between those two statements the notification could
+    be lost - broker down, process killed - with nothing recording that
+    it had ever been due, and the publish itself ran inside the user's
+    request, where Celery's twenty-second default retry loop froze the
+    page on every case creation.
+
+    Nothing here touches the network. workers.outbox_tasks delivers.
+    """
 
     tenant_id = get_case_tenant_id(case_id)
+    company = get_case_company(case_id)
 
     with get_db_connection() as conn:
 
@@ -954,23 +1014,280 @@ def log_case_event(case_id, event_type, description):
         VALUES (%s, %s, %s, to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS'), %s)
         """, (case_id, event_type, description, tenant_id))
 
-    try:
-        company = get_case_company(case_id)
-
         if company:
-            from workers.notification_tasks import dispatch_webhook
-
-            dispatch_webhook.delay(
+            _enqueue_webhook_deliveries(
+                c,
+                tenant_id=tenant_id,
                 company=company,
                 event_type=event_type,
                 payload={
                     "case_id": case_id,
                     "event_type": event_type,
                     "description": description,
-                }
+                },
             )
-    except Exception:
-        pass
+
+
+def _enqueue_webhook_deliveries(cursor, tenant_id, company, event_type, payload):
+    """
+    Write one outbox row per subscriber, on the caller's cursor.
+
+    Takes a cursor rather than opening its own connection so the rows
+    join the caller's transaction. Opening a second connection here would
+    reintroduce exactly the gap this replaced - the event committed, the
+    notifications not.
+
+    Subscribers are resolved now rather than at delivery time, so the set
+    of recipients is the set that existed when the event happened. A
+    webhook registered a minute later does not retroactively receive it,
+    which is both the honest reading of a subscription and the one a
+    customer can reason about.
+
+    One row per subscriber: each endpoint then succeeds, retries and
+    fails independently, and a single broken integration cannot cause
+    re-delivery to the others.
+    """
+
+    cursor.execute("""
+    INSERT INTO webhook_outbox (tenant_id, webhook_id, company, event_type, payload)
+    SELECT %s, id, %s, %s, %s::jsonb
+    FROM webhooks
+    WHERE company = %s
+      AND is_active = 1
+      AND (event_type = %s OR event_type = 'ALL')
+    """, (
+        tenant_id,
+        company,
+        event_type,
+        json.dumps(payload),
+        company,
+        event_type,
+    ))
+
+
+# ---------------------------------------------------------------------
+# Webhook outbox relay
+# ---------------------------------------------------------------------
+#
+# Delivery is at-least-once, so the schedule below is about how long a
+# customer's endpoint may be down before events start piling up, not
+# about whether they arrive. Roughly: a minute, five, fifteen, an hour,
+# six hours - then a human is needed.
+#
+# Growing rather than fixed because the two failure shapes are different.
+# A deploy or a restart clears in seconds, and a fixed hourly retry would
+# make a ten-second blip look like an hour-long outage to the customer. A
+# genuinely broken endpoint, meanwhile, must not be hammered every minute
+# for days.
+
+WEBHOOK_RETRY_SCHEDULE_SECONDS = (60, 300, 900, 3600, 21600)
+
+# The schedule holds the gaps *between* attempts, so there is one more
+# attempt than there are gaps: try, wait 60s, try, wait 300s, ... try. Six
+# attempts spread over roughly seven and a half hours - long enough to
+# survive a working morning of downtime, short enough that a genuinely
+# dead endpoint is escalated the same day.
+WEBHOOK_MAX_ATTEMPTS = len(WEBHOOK_RETRY_SCHEDULE_SECONDS) + 1
+
+# How long a claimed row stays invisible to other relay runs. Comfortably
+# longer than one delivery (notifications.REQUEST_TIMEOUT_SECONDS is 5),
+# so a slow endpoint is not retried while the first attempt is still in
+# flight - but short enough that a relay killed mid-delivery releases its
+# work in minutes rather than being lost.
+WEBHOOK_CLAIM_LEASE_SECONDS = 120
+
+
+def claim_due_webhook_deliveries(limit=50):
+    """
+    Take ownership of up to ``limit`` deliveries that are due now.
+
+    Returns a list of (id, webhook_id, company, event_type, payload,
+    attempts).
+
+    FOR UPDATE SKIP LOCKED is what makes this safe to run in several
+    workers at once: each transaction takes rows nobody else holds and
+    steps over the rest instead of queueing behind them. Without it, two
+    relays would either deliver the same row twice or serialise on the
+    same lock.
+
+    Claiming pushes next_attempt_at out by a lease rather than holding
+    the row locked for the duration of the delivery. An HTTP call can
+    take seconds; a database transaction held open across it would block
+    writers on this table for as long as the customer's endpoint takes to
+    answer.
+
+    The consequence of a lease is that a relay killed after delivering
+    but before recording it will deliver again when the lease expires -
+    which is why the contract is at-least-once and subscribers are told
+    to be idempotent.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        WITH due AS (
+            SELECT id
+            FROM webhook_outbox
+            WHERE status = 'PENDING'
+              AND next_attempt_at <= now()
+            ORDER BY next_attempt_at, id
+            FOR UPDATE SKIP LOCKED
+            LIMIT %s
+        )
+        UPDATE webhook_outbox AS o
+        SET attempts = o.attempts + 1,
+            next_attempt_at = now() + (%s * INTERVAL '1 second')
+        FROM due
+        WHERE o.id = due.id
+        RETURNING o.id, o.webhook_id, o.company, o.event_type,
+                  o.payload, o.attempts
+        """, (limit, WEBHOOK_CLAIM_LEASE_SECONDS))
+
+        return c.fetchall()
+
+
+def mark_webhook_delivered(outbox_id, status_code=None):
+    """Record a successful delivery. Terminal - never retried."""
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        UPDATE webhook_outbox
+        SET status = 'DELIVERED',
+            delivered_at = now(),
+            last_status_code = %s,
+            last_error = NULL
+        WHERE id = %s
+          AND status = 'PENDING'
+        """, (status_code, outbox_id))
+
+        return c.rowcount > 0
+
+
+def mark_webhook_delivery_failed(outbox_id, error, status_code=None):
+    """
+    Record a failed attempt and schedule the next one.
+
+    Exhausting WEBHOOK_MAX_ATTEMPTS moves the row to FAILED rather than
+    deleting it. A notification a customer never received is a fact worth
+    keeping: it is the answer to "you never told us about that case", and
+    it is what an operator lists when asked what is broken.
+
+    The delay is chosen from the schedule by attempt number, computed in
+    SQL against now() so it cannot drift with the application clock.
+    """
+
+    attempt_index = None
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute(
+            "SELECT attempts FROM webhook_outbox WHERE id = %s", (outbox_id,)
+        )
+
+        row = c.fetchone()
+
+        if row is None:
+            return False
+
+        attempt_index = row[0]
+
+        if attempt_index >= WEBHOOK_MAX_ATTEMPTS:
+
+            c.execute("""
+            UPDATE webhook_outbox
+            SET status = 'FAILED',
+                last_error = %s,
+                last_status_code = %s
+            WHERE id = %s
+            """, (error, status_code, outbox_id))
+
+            return False
+
+        delay = WEBHOOK_RETRY_SCHEDULE_SECONDS[
+            min(attempt_index, len(WEBHOOK_RETRY_SCHEDULE_SECONDS)) - 1
+        ]
+
+        c.execute("""
+        UPDATE webhook_outbox
+        SET next_attempt_at = now() + (%s * INTERVAL '1 second'),
+            last_error = %s,
+            last_status_code = %s
+        WHERE id = %s
+        """, (delay, error, status_code, outbox_id))
+
+        return True
+
+
+def cancel_webhook_delivery(outbox_id, reason):
+    """
+    Stop trying: the subscriber is gone or switched off.
+
+    Distinct from FAILED. FAILED means we could not deliver something the
+    customer still wants; CANCELLED means they withdrew the request. An
+    operator chasing broken integrations should not be shown the second.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        UPDATE webhook_outbox
+        SET status = 'CANCELLED',
+            last_error = %s
+        WHERE id = %s
+          AND status = 'PENDING'
+        """, (reason, outbox_id))
+
+        return c.rowcount > 0
+
+
+def get_webhook_by_id(webhook_id):
+    """One subscriber, or None if it has been deleted."""
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        SELECT id, company, url, event_type, secret, is_active, created_at
+        FROM webhooks
+        WHERE id = %s
+        """, (webhook_id,))
+
+        return c.fetchone()
+
+
+def count_webhook_outbox_by_status(tenant_id=None):
+    """
+    How many deliveries are pending, delivered, failed and cancelled.
+
+    For an operations view and for support. "Are our integrations
+    working?" should be answerable from data.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        if tenant_id is None:
+            c.execute("""
+            SELECT status, count(*) FROM webhook_outbox GROUP BY status
+            """)
+        else:
+            c.execute("""
+            SELECT status, count(*) FROM webhook_outbox
+            WHERE tenant_id = %s GROUP BY status
+            """, (tenant_id,))
+
+        return dict(c.fetchall())
 
 
 def get_case_events(case_id):

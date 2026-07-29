@@ -165,6 +165,31 @@ services:
         condition: service_healthy
 
 
+  # The scheduler. Its only job today is triggering the webhook outbox
+  # sweep every ten seconds - see beat_schedule in workers/celery_app.py.
+  #
+  # Exactly one instance. Beat publishes on a timer with no coordination
+  # between processes, so a second one would double every scheduled task.
+  # (That does not cause duplicate webhook deliveries - the relay claims
+  # rows with FOR UPDATE SKIP LOCKED - but it doubles the query load for
+  # no benefit.)
+  #
+  # If this service is down, notifications are delayed, not lost: rows
+  # stay due in the database and are delivered when it comes back.
+  celery_beat:
+    build: .
+    command: >
+      celery -A workers.celery_app beat --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+    extra_hosts: *host_gateway
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+
 volumes:
   pgdata:
     name: mobilityflow_ai1_pgdata

@@ -73,6 +73,70 @@ jobs:
 
           exit $failed
 
+  # A separate job, on a database this workflow has never touched.
+  #
+  # The test suite proves init_db() is idempotent, because it runs against
+  # a database that init_db() has already built. That is a weaker property
+  # than it looks: every developer database in this project grew
+  # incrementally - table, then column, then migration, in whatever order
+  # the code was written - so a step that depends on an earlier one having
+  # already happened passes forever and fails only on an empty database.
+  #
+  # Which is to say: it fails only on a customer's first deployment.
+  # Exactly that happened here - migration 0003 indexed
+  # cases (tenant_id, ...) before the column existed.
+  fresh-install:
+    name: A new deployment can be installed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mobilityflow
+          POSTGRES_PASSWORD: ci-only-not-a-real-secret
+          POSTGRES_DB: mobilityflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mobilityflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: mobilityflow
+      PGPASSWORD: ci-only-not-a-real-secret
+      PGDATABASE: mobilityflow
+
+      # init_db() ends by creating the bootstrap administrator, so the
+      # variables that account is built from have to be present. These are
+      # throwaway values for a database dropped seconds later.
+      DEFAULT_ADMIN_USERNAME: ci-admin
+      DEFAULT_ADMIN_PASSWORD: ci-only-not-a-real-secret
+      DEFAULT_ADMIN_COMPANY: CI Company
+      JWT_SECRET_KEY: ci-only-jwt-secret-not-used-outside-this-job-0123456789
+      ENCRYPTION_KEY: DpzHVAf8GUh5obKUI1pqjRhwv9io37RSsETHVdcrUcc=
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install into an empty database
+        run: python -m scripts.verify_fresh_install
+
   tests:
     name: Test suite
     runs-on: ubuntu-latest
@@ -96,6 +160,27 @@ jobs:
           --health-timeout 5s
           --health-retries 20
 
+      # Present because a deployment has it, not because a test asserts
+      # on it. db.database.log_case_event() publishes a webhook task on
+      # every case event; with no broker reachable, Celery's default
+      # result-backend retry_policy spends twenty seconds retrying before
+      # giving up. Nothing fails - the call is wrapped - but every run
+      # paid twenty seconds and filled the log with connection errors.
+      #
+      # Providing the broker is the honest fix for CI. The twenty-second
+      # block itself is an application defect and is fixed separately in
+      # workers/celery_app.py; CI should mirror a deployment, not stand
+      # in for a code change.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     env:
       # No .env exists in CI. bootstrap.load_environment treats that as
       # normal and these variables supply the configuration directly -
@@ -105,6 +190,8 @@ jobs:
       PGUSER: mobilityflow
       PGPASSWORD: ci-only-not-a-real-secret
       PGDATABASE: mobilityflow
+
+      REDIS_URL: redis://localhost:6379/0
 
       # conftest.py derives "<database>_test" by default. Naming it
       # explicitly documents, in the run's own configuration, that the
@@ -129,6 +216,36 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # conftest.py redirects the suite to <database>_test and creates it
+      # itself, so the application database stays empty unless something
+      # builds it. On a developer machine it is never empty, which is why
+      # this was not needed until the database-backed tests first ran
+      # here.
+      #
+      # tests/test_database_isolation.py connects to the application
+      # database directly to prove no test row reached it. Against an
+      # empty database that query cannot run at all:
+      #
+      #     psycopg2.errors.UndefinedTable: relation "cases" does not exist
+      #
+      # Making the test tolerate a missing table would be the wrong fix -
+      # it would pass vacuously wherever the application database has no
+      # schema, which is precisely the kind of test that proves nothing.
+      # So CI installs the application database the way a deployment
+      # does, and the isolation test then compares two real schemas.
+      - name: Install the application database
+        env:
+          # Needed only by this step: init_db() finishes by creating the
+          # bootstrap administrator. Throwaway values for a database that
+          # exists for the length of one job. pytest does not use them -
+          # conftest.py supplies its own test-only values.
+          DEFAULT_ADMIN_USERNAME: ci-admin
+          DEFAULT_ADMIN_PASSWORD: ci-only-not-a-real-secret
+          DEFAULT_ADMIN_COMPANY: CI Company
+          JWT_SECRET_KEY: ci-only-jwt-secret-not-used-outside-this-job-0123456789
+          ENCRYPTION_KEY: DpzHVAf8GUh5obKUI1pqjRhwv9io37RSsETHVdcrUcc=
+        run: python -m scripts.migrate
 
       # The suite skips database-backed modules when Postgres is
       # unreachable, which is right on a laptop and wrong here: in CI
@@ -159,8 +276,70 @@ jobs:
           print("PostgreSQL reachable.")
           PYTHON
 
+      # -rs prints the reason for every skip. Without it a skipped test is
+      # a silent one, and the reason is exactly the diagnostic needed when
+      # the count is wrong.
       - name: Run tests
-        run: python -m pytest -v --tb=short --durations=10
+        run: |
+          python -m pytest -v -rs --tb=short --durations=10 \
+            --junitxml=test-results.xml
+
+      # The connectivity check above proves the runner can reach Postgres.
+      # It does not prove the suite used it: conftest.py creates the test
+      # database and applies the schema itself, and when that fails it
+      # skips the database-backed tests rather than failing them - correct
+      # on a laptop, wrong here, because it turns a broken database into a
+      # green build.
+      #
+      # This is what the first run of this workflow did: 255 passed, 107
+      # skipped, in 3.26 seconds. Green, and blind to every test covering
+      # tenant isolation, the audit trail, and the value report.
+      #
+      # So CI asserts the count directly. A skip is a test that did not
+      # run, and a test that did not run is not evidence.
+      - name: Every test must actually have run
+        if: always()
+        run: |
+          python - <<'PYTHON'
+          import sys
+          import xml.etree.ElementTree as ElementTree
+
+          root = ElementTree.parse("test-results.xml").getroot()
+
+          # pytest emits <testsuites><testsuite/></testsuites>; older
+          # versions emit a bare <testsuite>. Handle both rather than
+          # assuming, so this check does not quietly stop working.
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+
+          if suite is None:
+              sys.exit("Could not read the test report.")
+
+          total = int(suite.get("tests", 0))
+          skipped = int(suite.get("skipped", 0))
+
+          print(f"{total} tests collected, {skipped} skipped.")
+
+          if skipped:
+              print()
+              print("Skipped:")
+
+              for case in suite.iter("testcase"):
+                  for skip in case.iter("skipped"):
+                      print(
+                          f"  {case.get('classname')}::{case.get('name')}"
+                          f"\n      {skip.get('message', '').strip()}"
+                      )
+
+              sys.exit(
+                  f"\n{skipped} test(s) did not run. On a developer machine "
+                  "conftest.py skips the database-backed tests when Postgres "
+                  "is unavailable; in CI the database is provided, so a skip "
+                  "means the suite failed to reach or prepare it. The reason "
+                  "is printed above."
+              )
+
+          print("Every collected test ran.")
+          PYTHON
 
       # Guard tests only prove that the strings ship; they cannot prove
       # the layout survives a longer language. Pseudo-localization is how

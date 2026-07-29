@@ -36,6 +36,7 @@ Three things happen here, in a deliberate order.
    These are test-only values. Never reuse them outside of tests.
 """
 
+import ast
 import os
 
 from bootstrap import load_environment
@@ -145,22 +146,161 @@ def _connect_to_maintenance_database():
     return connection
 
 
-# Set once, by the session fixture below. Most of this suite is pure
+# Distinct from None, which is the answer "the database is fine". Without
+# a separate sentinel the two are indistinguishable and the check would
+# be repeated on every single test.
+_NOT_YET_CHECKED = object()
+
+# Set on first use by _database_error(). Most of this suite is pure
 # logic - validators, i18n, risk rules, urgency grouping - and must stay
 # runnable on a laptop with no database running. Only the tests that
 # genuinely touch Postgres are skipped when it is unavailable.
-_DATABASE_ERROR = None
+_DATABASE_ERROR = _NOT_YET_CHECKED
 
-# A test module is treated as needing the database if its source mentions
-# one of these. Cruder than a marker on every test, but it cannot fall out
-# of date: a module that starts using the database starts being skipped
-# correctly without anyone remembering to annotate it.
-_DATABASE_MARKERS = (
-    "db.database",
-    "get_db_connection",
-    "core.case.service",
-    "core.reporting.value import",
-)
+# Which test modules need PostgreSQL, decided by reading their code.
+#
+# This was a substring search over the file's text, which is the obvious
+# implementation and quietly wrong twice over:
+#
+#   * "core.reporting.value import" matched tests/test_value_report.py on
+#     its import line, but core/reporting/value.py touches no database at
+#     all. 25 pure tests stopped running on every machine without
+#     Postgres - the 25 pinning the honesty of the figures in a document
+#     the customer shows their CFO.
+#
+#   * "db.database" matched tests/project_audit/test_runtime_audit.py on
+#     a *comment*, and every module that merely names the module in a
+#     docstring. Prose disabled tests.
+#
+# A substring search cannot tell code from commentary, so this parses
+# instead. Three things count as needing a real database, all of them
+# executable code rather than text:
+#
+#   1. importing db.database, at module or function level;
+#   2. a patch("db.database...") target - patching one function does not
+#      stop the rest of the module opening a connection;
+#   3. calling get_db_connection().
+#
+# Docstrings are excluded deliberately: they are string constants in the
+# tree, and a module explaining the database is not a module using it.
+#
+# Erring towards under-matching is the right direction. A module wrongly
+# treated as pure fails loudly with a connection error; one wrongly
+# treated as database-backed disappears silently, which is how 25 tests
+# went missing. CI is the backstop either way - it provides a database
+# and fails on any skip at all.
+
+_DATABASE_MODULE = "db.database"
+
+_DATABASE_FUNCTION = "get_db_connection"
+
+_PATCHING_CALLS = {"patch", "patch.object", "mock.patch"}
+
+
+def _callable_name(node):
+    """Dotted name of a call target: `patch`, `mock.patch`, `x.y.z`."""
+
+    parts = []
+
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+
+    return ".".join(reversed(parts))
+
+
+def _docstring_nodes(tree):
+    """
+    Every string constant that is a docstring.
+
+    Collected so they can be ignored: a docstring is documentation that
+    happens to be a string literal, and treating it as code is what let
+    prose switch tests off.
+    """
+
+    found = set()
+
+    for node in ast.walk(tree):
+
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+
+        body = getattr(node, "body", None)
+
+        if not body:
+            continue
+
+        first = body[0]
+
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            found.add(id(first.value))
+
+    return found
+
+
+def _module_needs_the_database(source):
+    """Whether this test module's *code* reaches PostgreSQL."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Not this hook's job to fail on a module that does not parse -
+        # pytest will report that far more clearly during collection.
+        return False
+
+    docstrings = _docstring_nodes(tree)
+
+    for node in ast.walk(tree):
+
+        # 1. import db.database / from db.database import ...
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _DATABASE_MODULE:
+                    return True
+
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+
+            if module == _DATABASE_MODULE or module.startswith(
+                _DATABASE_MODULE + "."
+            ):
+                return True
+
+            # `from db import database`
+            if module == "db" and any(
+                alias.name == "database" for alias in node.names
+            ):
+                return True
+
+        elif isinstance(node, ast.Call):
+
+            name = _callable_name(node.func)
+
+            # 3. get_db_connection(...) or database.get_db_connection(...)
+            if name.split(".")[-1] == _DATABASE_FUNCTION:
+                return True
+
+            # 2. patch("db.database.something")
+            if name in _PATCHING_CALLS:
+                for argument in node.args:
+                    if (
+                        isinstance(argument, ast.Constant)
+                        and isinstance(argument.value, str)
+                        and id(argument) not in docstrings
+                        and argument.value.startswith(_DATABASE_MODULE)
+                    ):
+                        return True
+
+    return False
 
 
 def _prepare_test_database():
@@ -222,6 +362,31 @@ def _prepare_test_database():
     return None
 
 
+def _database_error():
+    """
+    The reason the test database is unusable, or None if it is fine.
+
+    Prepared on first request and cached, rather than in the session
+    fixture. pytest calls pytest_runtest_setup *before* setting up that
+    test's fixtures, so with the work in the fixture the module global
+    was still at its initial value when the first test of the session was
+    examined - and that test alone was never skipped, whatever it needed.
+
+    It showed up as "1 passed, 4 skipped" in a module whose five tests
+    are identical in their requirements. Ordering-dependent skipping is
+    the kind of defect that reads as a flaky test rather than a bug in
+    the harness, so the ordering dependency is removed rather than
+    documented.
+    """
+
+    global _DATABASE_ERROR
+
+    if _DATABASE_ERROR is _NOT_YET_CHECKED:
+        _DATABASE_ERROR = _prepare_test_database()
+
+    return _DATABASE_ERROR
+
+
 @pytest.fixture(scope="session", autouse=True)
 def test_database():
     """
@@ -232,9 +397,7 @@ def test_database():
     is recreated from scratch on any machine that does not have it.
     """
 
-    global _DATABASE_ERROR
-
-    _DATABASE_ERROR = _prepare_test_database()
+    _database_error()
 
     yield TEST_DATABASE
 
@@ -247,9 +410,16 @@ def pytest_runtest_setup(item):
     validator, i18n and risk-rule tests - none of which open a connection -
     unrunnable without Docker, which is the opposite of what a fast local
     suite should do.
+
+    In CI this branch should never be taken: the workflow provides a
+    PostgreSQL service and then fails the build on any skipped test, so a
+    database that cannot be prepared is a red build rather than a quiet
+    one.
     """
 
-    if _DATABASE_ERROR is None:
+    reason = _database_error()
+
+    if reason is None:
         return
 
     source_file = getattr(item.module, "__file__", None)
@@ -262,5 +432,5 @@ def pytest_runtest_setup(item):
     except OSError:
         return
 
-    if any(marker in source for marker in _DATABASE_MARKERS):
-        pytest.skip(f"database unavailable: {_DATABASE_ERROR}")
+    if _module_needs_the_database(source):
+        pytest.skip(f"database unavailable: {reason}")
