@@ -1,5 +1,6 @@
 import os
 import contextvars
+import logging
 from collections import namedtuple
 from contextlib import contextmanager
 
@@ -7,6 +8,10 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import SimpleConnectionPool
 
+
+# Named for this module, so an operator can raise or lower the verbosity
+# of database-layer messages without touching anything else.
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -973,6 +978,19 @@ def log_case_event(case_id, event_type, description):
         VALUES (%s, %s, %s, to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS'), %s)
         """, (case_id, event_type, description, tenant_id))
 
+    # The case event is already committed above. Webhook delivery is a
+    # notification about that fact, so a broker failure must never undo
+    # it or surface as an error on the user's action - the event did
+    # happen, and the audit trail has to say so.
+    #
+    # But it must not be silent either. This used to be `except
+    # Exception: pass`, which meant an outbound integration could stop
+    # delivering entirely and nothing anywhere would say so - the
+    # customer discovers it when their downstream system is missing a
+    # week of events. A dropped notification is a fact an operator needs.
+    #
+    # Bounded: workers/celery_app.py caps the publish attempt at a few
+    # seconds. Before that it blocked this request for twenty.
     try:
         company = get_case_company(case_id)
 
@@ -988,8 +1006,15 @@ def log_case_event(case_id, event_type, description):
                     "description": description,
                 }
             )
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001 - logged, never raised; see above
+        logger.warning(
+            "Webhook notification for case %s (%s) could not be queued. "
+            "The case event itself was recorded. Subscribers will not "
+            "receive this event.",
+            case_id,
+            event_type,
+            exc_info=True,
+        )
 
 
 def get_case_events(case_id):

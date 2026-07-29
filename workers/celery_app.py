@@ -34,6 +34,65 @@ celery_app.conf.update(
     result_expires=3600,
     task_default_queue="mobilityflow",
     broker_connection_retry_on_startup=True,
+
+    # ---------------------------------------------------------------
+    # Bounded waits when the broker is unreachable.
+    #
+    # db.database.log_case_event() publishes a webhook task on every
+    # case event - creating a case, advancing the workflow, uploading a
+    # document. That publish happens inside the user's own request.
+    #
+    # Celery's defaults are built for a worker, which should wait:
+    #
+    #     Backend.retry_policy = {'max_retries': 20, 'interval_step': 1}
+    #
+    # Twenty attempts, one second apart. With Redis down, every click
+    # froze the page for twenty seconds and then failed silently,
+    # because the caller wraps the publish in a try/except. The user
+    # saw a spinner and no explanation.
+    #
+    # Shortening this loses nothing real. Twenty seconds of retrying
+    # buys no durability guarantee: if the broker is down longer than
+    # that the task is dropped anyway, so the wait was only ever a
+    # lottery ticket the user paid for. The durable answer is a
+    # transactional outbox - see the note at the end of this file.
+    #
+    # Publisher side only
+    # -------------------
+    # broker_connection_max_retries is deliberately NOT set here. It is
+    # shared with the worker's own connection handling, and a worker
+    # that gives up after two attempts dies on any broker restart
+    # instead of reconnecting. The settings below bound publishing and
+    # result lookups without touching the consume loop.
+    #
+    # Worst case is now roughly 2s to connect plus two short retries,
+    # against 20s before.
+    # ---------------------------------------------------------------
+    broker_connection_timeout=2.0,
+
+    broker_transport_options={
+        # socket_connect_timeout only. socket_timeout would also apply
+        # to the worker's blocking BRPOP read, which is supposed to
+        # block.
+        "socket_connect_timeout": 2.0,
+    },
+
+    task_publish_retry_policy={
+        "max_retries": 2,
+        "interval_start": 0,
+        "interval_step": 0.2,
+        "interval_max": 0.5,
+    },
+
+    result_backend_transport_options={
+        "socket_connect_timeout": 2.0,
+        "retry_policy": {
+            "max_retries": 2,
+            "interval_start": 0,
+            "interval_step": 0.2,
+            "interval_max": 0.5,
+        },
+    },
 )
 
 
