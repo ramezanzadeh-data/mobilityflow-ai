@@ -38,10 +38,20 @@ openpyxl>=3.1
 # ---------------- PDF export (core/pdf_export.py) ----------------
 reportlab>=4.0
 
-# ---------------- AI (ai/engine.py, ai/agent.py - local via Ollama) ----------------
-# Version >=0.4.0 is required because the real AI agent uses
-# tool-calling, which older versions don't support.
-ollama>=0.4.0
+# ---------------- AI (local LLM via Ollama) ----------------
+# No `ollama` client package. The project talks to Ollama over its
+# documented HTTP API from core/ai/ollama_client.py using `requests`
+# (listed above), for two reasons found in production:
+#
+#  * the client package builds a module-level HTTP client at import time
+#    with the timeout disabled (Timeout(timeout=None)), so a backend that
+#    accepted the connection and then went quiet blocked the caller
+#    forever - a permanent spinner in Streamlit, a held slot in Celery;
+#  * building that client at import time made the whole test suite
+#    depend on it, and it failed collection outright behind a proxy.
+#
+# tests/test_ai_client_boundary.py fails if the import is reintroduced.
+#
 # pydantic: structured payload schemas for the AI Response Formatter
 # (core/ai/schemas.py, core/ai/response_formatter.py)
 pydantic>=2.0
