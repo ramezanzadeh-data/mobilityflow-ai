@@ -1,3 +1,84 @@
+"""
+Prompt construction for the local LLM.
+
+Correspondence prompts take a language
+--------------------------------------
+Everything the product drafts on a customer's behalf - emails to a
+commune, letters to the cantonal migration office, checklists a
+specialist prints - used to be written in English regardless of what the
+user had selected, because the prompts themselves are English and the
+model answers in the language it is addressed in. Choosing French
+translated the buttons around a French-speaking commune's English letter.
+
+So the correspondence builders now take an explicit language and instruct
+the model in it. The language comes from the case, not from the session:
+see core/correspondence.py for why Valais makes that distinction
+unavoidable.
+
+Analytical prompts deliberately do not
+--------------------------------------
+Document classification, defect detection and the recommendation prompt
+return data - a JSON document type, a list of defects, a short internal
+note. Their output is consumed by code or read by the specialist who
+already has a translated interface around it, and asking the model to
+produce structured output in a language it was not instructed in is how
+schema-conforming replies stop conforming. They stay in English.
+
+The line is: if it goes to an authority, it takes a language; if it comes
+back into the product, it does not.
+"""
+
+
+# Written to the model in the language's own name. "Antwort auf Deutsch"
+# is followed more reliably than "answer in de", and the endonym is
+# unambiguous where an ISO code is not.
+_LANGUAGE_INSTRUCTIONS = {
+    "de": "Deutsch (German)",
+    "fr": "Français (French)",
+    "it": "Italiano (Italian)",
+    "en": "English",
+}
+
+DEFAULT_CORRESPONDENCE_LANGUAGE = "en"
+
+
+def _language_name(language):
+    """
+    The model-facing name for a language code.
+
+    Falls back to English rather than passing an unknown code through. A
+    prompt saying "write this in xx" produces confident output in
+    something, and nobody reviewing the draft would know what went wrong.
+    """
+
+    return _LANGUAGE_INSTRUCTIONS.get(
+        (language or "").lower(),
+        _LANGUAGE_INSTRUCTIONS[DEFAULT_CORRESPONDENCE_LANGUAGE],
+    )
+
+
+def _language_rule(language):
+    """
+    The instruction block appended to every correspondence prompt.
+
+    Stated twice - once as the language, once as a prohibition on
+    English - because a model given English instructions and asked for
+    French routinely produces a French body with an English subject line
+    or an English sign-off, and a half-translated letter to an authority
+    reads worse than an English one.
+    """
+
+    name = _language_name(language)
+
+    return f"""
+LANGUAGE:
+- Write the ENTIRE output in {name}.
+- This includes the subject line, the salutation, the body and the
+  closing. Do not leave any part in English.
+- Use the administrative register a Swiss authority would expect in
+  {name}, not a literal translation of English phrasing.
+"""
+
 
 AGENT_SYSTEM_PROMPT = """You are an AI case manager assistant for a Swiss relocation \
 / immigration company. You have tools to read REAL data about a specific case \
@@ -16,7 +97,16 @@ recommend it via recommend_workflow_advance. A human always makes that final cal
 """
 
 
-def build_email_prompt(employee_name, canton, step, tone="formal"):
+def build_email_prompt(
+    employee_name, canton, step, tone="formal",
+    language=DEFAULT_CORRESPONDENCE_LANGUAGE,
+):
+    """
+    An email a specialist will send to a Swiss authority.
+
+    ``language`` is the case's correspondence language, not the user's
+    interface language - see core/correspondence.py.
+    """
 
     return f"""
 You are an administrative assistant in Switzerland.
@@ -31,11 +121,21 @@ Rules:
 - {tone} tone
 - concise
 - Swiss administrative style
-- include a subject line at the top like "Subject: ..."
-"""
+- include a subject line at the top, in the output language, on its own
+  first line
+{_language_rule(language)}"""
 
 
-def build_checklist_prompt(employee_name, workflow):
+def build_checklist_prompt(
+    employee_name, workflow, language=DEFAULT_CORRESPONDENCE_LANGUAGE,
+):
+    """
+    A printable checklist.
+
+    Takes a language because it is printed and handed to people - often
+    the employee themselves, who is the one person in the process least
+    likely to read English.
+    """
 
     steps_text = "\n".join(f"- {s}" for s in workflow)
 
@@ -52,10 +152,22 @@ Format:
 - Use checkbox-style lines like "[ ] Step description"
 - Group steps logically if it makes sense (Identity, Permit, Canton, Final)
 - Keep it concise, no extra commentary
-"""
+- The steps above are given in English; translate them into the output
+  language rather than copying them
+{_language_rule(language)}"""
 
 
-def build_letter_prompt(employee_name, nationality, canton, permit, employer, risk, trace, workflow):
+def build_letter_prompt(
+    employee_name, nationality, canton, permit, employer, risk, trace,
+    workflow, language=DEFAULT_CORRESPONDENCE_LANGUAGE,
+):
+    """
+    A formal letter to a cantonal migration office.
+
+    The highest-stakes output the product generates: it is signed by the
+    employer and filed with an authority. A letter in the wrong language
+    is not a translation problem, it is a submission that gets returned.
+    """
 
     return f"""
 You are drafting a FORMAL OFFICIAL LETTER on behalf of an employer, to
@@ -73,10 +185,13 @@ CASE DETAILS:
 - Process steps already identified: {workflow}
 
 Write a formal, professional letter in Swiss administrative style,
-addressed generically to "Cantonal Migration Office", requesting
+addressed generically to the cantonal migration office, requesting
 support/processing of this case. Include a placeholder date and a
 signature line. Do not invent specific facts not given above.
-"""
+
+The case details above are given in English; render them in the output
+language rather than quoting them.
+{_language_rule(language)}"""
 
 
 def build_document_classification_prompt(raw_text):

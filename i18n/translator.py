@@ -35,7 +35,29 @@ DEFAULT_LANGUAGE = "en"
 
 # Order matters: the first entry is the fallback for every other
 # language, so it must always be the most complete one.
-SHIPPED_LANGUAGES = ["en", "de", "fr"]
+#
+# English only, by product decision. German and French are complete -
+# i18n/translations/de.json and fr.json each hold all 312 keys, checked
+# by tests/test_translation_integrity.py, which still runs against them.
+# They are not offered to users; nothing is deleted.
+#
+# Re-enabling is this line:
+#
+#     SHIPPED_LANGUAGES = ["en", "de", "fr"]
+#
+# Kept rather than removed because of what the product is for. Valais is
+# officially bilingual - the lower canton administers in French, the
+# Oberwallis in German - so correspondence with a commune is not in
+# English, and core/correspondence.py already resolves a per-case
+# language for exactly that. That machinery stays wired; only the
+# interface selector is reduced.
+SHIPPED_LANGUAGES = ["en"]
+
+# Every language that has a complete translation file, whether or not it
+# is offered. The integrity tests read this, so switching the product to
+# English does not quietly stop checking the other two - a translation
+# nobody is looking at is a translation that rots.
+TRANSLATED_LANGUAGES = ["en", "de", "fr"]
 
 # Shown in the language selector. Each language is named in itself -
 # somebody looking for German is looking for "Deutsch", not "German".

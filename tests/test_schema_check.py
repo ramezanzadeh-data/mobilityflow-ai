@@ -174,4 +174,7 @@ def test_the_columns_the_code_writes_are_all_declared():
         "arrival_date",
         "contract_start_date",
         "permit_expiry_date",
+        # Migration 0006. Read by load_case() and passed to the prompt
+        # builders, so a deployment missing it breaks email generation.
+        "correspondence_language",
     }

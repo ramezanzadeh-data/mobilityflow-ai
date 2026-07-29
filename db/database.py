@@ -139,17 +139,30 @@ ALLOWED_CASE_COLUMNS = {
 }
 
 
-# Positions of the columns added by migration 0003 in a `SELECT * FROM
-# cases` row. Every reader in this codebase indexes case rows
-# positionally, and ALTER TABLE ADD COLUMN appends, so these sit after
-# audit_log at 15.
+# Positions in a row returned by load_case(), which is the only query
+# these are read from.
 #
-# Named constants rather than bare numbers because that is the whole
-# fragility: `case[16]` tells a reader nothing, and a column reordering
-# would silently feed the wrong value into a statutory deadline.
-CASE_INDEX_ARRIVAL_DATE = 16
-CASE_INDEX_CONTRACT_START_DATE = 17
-CASE_INDEX_PERMIT_EXPIRY_DATE = 18
+# They previously described a `SELECT * FROM cases` row instead, and
+# load_case() does not select *. It lists its columns explicitly and did
+# not list the date columns at all, so index 16 - meant to be
+# arrival_date - was tenant_id, and 17 and 18 were off the end of the
+# row. case_statutory_dates() therefore returned an integer tenant id as
+# the arrival date, parse_date() correctly rejected it, and every
+# statutory obligation in the product reported "date not recorded".
+#
+# The whole deadline engine was wired to nothing, and nothing failed:
+# "we have no arrival date for this case" is a legitimate answer the
+# engine is designed to give, so it looked like missing data rather than
+# a broken read.
+#
+# Named constants are not what makes this safe - they were named before
+# and still wrong. test_case_row_indices.py is what makes it safe: it
+# parses load_case()'s own SELECT and fails if a constant stops matching
+# the column it names.
+CASE_INDEX_ARRIVAL_DATE = 17
+CASE_INDEX_CONTRACT_START_DATE = 18
+CASE_INDEX_PERMIT_EXPIRY_DATE = 19
+CASE_INDEX_CORRESPONDENCE_LANGUAGE = 20
 
 
 def case_statutory_dates(case_row):
@@ -378,6 +391,7 @@ def init_db():
         _migrate_tasks_table(c)
         _migrate_users_table(c)
         _migrate_case_statutory_dates(c)
+        _migrate_case_correspondence_language(c)
         # Must run before _enable_row_level_security(): that function
         # applies the tenant_isolation policy to every table in
         # _RLS_TABLES, and this one is in that list.
@@ -474,6 +488,18 @@ def _migrate_users_table(c):
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password INTEGER DEFAULT 0")
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret TEXT")
     c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled INTEGER DEFAULT 0")
+
+
+def _migrate_case_correspondence_language(c):
+    """
+    Add the language a case's letters must be written in.
+
+    Separate from the user's interface language, which lives in the
+    session. See core/correspondence.py and the migration file for why
+    Valais makes the distinction unavoidable rather than academic.
+    """
+
+    c.execute(_read_migration("0006_case_correspondence_language.up.sql"))
 
 
 def _migrate_webhook_outbox(c):
@@ -1490,7 +1516,18 @@ def load_case(case_id):
             created_at,
             case_history,
             audit_log,
-            tenant_id
+            tenant_id,
+
+            -- Added by migration 0003. Absent from this list until now,
+            -- which is why case_statutory_dates() read tenant_id as the
+            -- arrival date and every statutory deadline in the product
+            -- reported "date not recorded" - see CASE_INDEX_* above.
+            arrival_date,
+            contract_start_date,
+            permit_expiry_date,
+
+            -- Added by migration 0006.
+            correspondence_language
 
         FROM cases
         WHERE id=%s
