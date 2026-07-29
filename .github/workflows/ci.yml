@@ -73,6 +73,70 @@ jobs:
 
           exit $failed
 
+  # A separate job, on a database this workflow has never touched.
+  #
+  # The test suite proves init_db() is idempotent, because it runs against
+  # a database that init_db() has already built. That is a weaker property
+  # than it looks: every developer database in this project grew
+  # incrementally - table, then column, then migration, in whatever order
+  # the code was written - so a step that depends on an earlier one having
+  # already happened passes forever and fails only on an empty database.
+  #
+  # Which is to say: it fails only on a customer's first deployment.
+  # Exactly that happened here - migration 0003 indexed
+  # cases (tenant_id, ...) before the column existed.
+  fresh-install:
+    name: A new deployment can be installed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mobilityflow
+          POSTGRES_PASSWORD: ci-only-not-a-real-secret
+          POSTGRES_DB: mobilityflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mobilityflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: mobilityflow
+      PGPASSWORD: ci-only-not-a-real-secret
+      PGDATABASE: mobilityflow
+
+      # init_db() ends by creating the bootstrap administrator, so the
+      # variables that account is built from have to be present. These are
+      # throwaway values for a database dropped seconds later.
+      DEFAULT_ADMIN_USERNAME: ci-admin
+      DEFAULT_ADMIN_PASSWORD: ci-only-not-a-real-secret
+      DEFAULT_ADMIN_COMPANY: CI Company
+      JWT_SECRET_KEY: ci-only-jwt-secret-not-used-outside-this-job-0123456789
+      ENCRYPTION_KEY: DpzHVAf8GUh5obKUI1pqjRhwv9io37RSsETHVdcrUcc=
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install into an empty database
+        run: python -m scripts.verify_fresh_install
+
   tests:
     name: Test suite
     runs-on: ubuntu-latest

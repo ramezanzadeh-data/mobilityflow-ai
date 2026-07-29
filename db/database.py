@@ -348,6 +348,26 @@ def init_db():
         )
         """)
 
+        # tenant_id comes first, before any other migration runs.
+        #
+        # It is the one column the rest of this function builds on:
+        # migration 0003 creates indexes on cases (tenant_id, ...) and
+        # _enable_row_level_security() writes the tenant_isolation policy
+        # against it on every table in _RLS_TABLES. Anything below may
+        # reference it, so nothing below can run before it exists.
+        #
+        # This used to sit five lines further down, which passed on every
+        # existing database - there tenant_id predates all of these
+        # migrations - and failed on every empty one with
+        #
+        #     psycopg2.errors.UndefinedColumn:
+        #     column "tenant_id" does not exist
+        #
+        # i.e. it worked everywhere except a customer's first deployment.
+        # scripts/verify_fresh_install.py is what catches that class of
+        # ordering defect, and CI runs it on every commit.
+        _migrate_add_tenant_id_columns(c)
+
         _migrate_documents_table(c)
         _migrate_tasks_table(c)
         _migrate_users_table(c)
@@ -356,7 +376,6 @@ def init_db():
         # applies the tenant_isolation policy to every table in
         # _RLS_TABLES, and this one is in that list.
         _migrate_tenant_value_assumptions(c)
-        _migrate_add_tenant_id_columns(c)
         _enable_row_level_security(c)
         _seed_default_rbac(c)
 
