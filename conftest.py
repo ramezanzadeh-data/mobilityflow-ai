@@ -155,11 +155,26 @@ _DATABASE_ERROR = None
 # one of these. Cruder than a marker on every test, but it cannot fall out
 # of date: a module that starts using the database starts being skipped
 # correctly without anyone remembering to annotate it.
+#
+# The cost of that crudeness is over-matching, and it has already bitten
+# once. "core.reporting.value import" was listed here and matched
+# tests/test_value_report.py on its import line - but core/reporting/value.py
+# holds no database reference at all; it is a pure function of its inputs
+# by design. The result was 25 tests silently not running on any machine
+# without Postgres, and those 25 are the ones pinning the honesty of the
+# figures in a document the customer shows their CFO.
+#
+# So a marker belongs here only if the module it names actually opens a
+# connection. Before adding one, check:
+#
+#     python -m pytest <the test file> --noconftest
+#
+# If it passes with no database, it does not belong in this list.
+#
+# "core.case.service" was also listed and matched nothing at all.
 _DATABASE_MARKERS = (
     "db.database",
     "get_db_connection",
-    "core.case.service",
-    "core.reporting.value import",
 )
 
 
