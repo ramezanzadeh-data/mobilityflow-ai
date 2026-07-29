@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "disclaimer": "⚠️ LEGAL VERIFICATION REQUIRED. This knowledge base contains general procedural structure based on publicly known facts about the Swiss immigration system and Valais administrative practice. It is NOT a substitute for advice from a licensed Swiss immigration lawyer or the canton's official migration office. Specific fees, exact processing durations, and current forms MUST be verified against official sources before being relied on for a real case. Any field marked 'verify_official_source: true' has NOT been confirmed against a live official source by this system.",
+    "schema_version": "1.0",
+    "last_reviewed_by_system": "unverified - built from general knowledge, not live official sources",
+    "canton_code": "VALAIS"
+  },
+
+  "canton_authority": {
+    "name": "Service de la population et des migrations (SPM) du canton du Valais",
+    "role": "Cantonal authority responsible for reviewing and approving residence/work permit applications before federal (SEM) validation for non-EU/EFTA cases.",
+    "verify_official_source": true,
+    "note": "Confirm current official name, address, and contact details on the canton's official website before use."
+  },
+
+  "commune_level": {
+    "office_name": "Contrôle des habitants (residents' registration office)",
+    "role": "Every commune in Switzerland (including all Valais communes) requires new residents to register in person, typically within 14 days of arrival.",
+    "verify_official_source": true
+  },
+
+  "federal_layer": {
+    "authority": "State Secretariat for Migration (SEM)",
+    "role": "For non-EU/EFTA nationals, cantonal approval (SPM) is not sufficient on its own - SEM federal approval and quota availability checks are also required before a permit is finalized.",
+    "verify_official_source": false,
+    "note": "This two-layer (cantonal + federal) approval structure for non-EU permits is a general, stable feature of the Swiss system (LEI/AIG), not Valais-specific."
+  },
+
+  "permit_notes": {
+    "B": {
+      "description": "Residence permit (EU/EFTA: registration-based; non-EU: quota-subject, employer/canton tied).",
+      "valais_specific_note": "Non-EU B permits in Valais are typically employer- and canton-specific; a job or canton change may require a new application, not just an update.",
+      "verify_official_source": true
+    },
+    "L": {
+      "description": "Short-term residence permit, tied to a fixed-term contract.",
+      "valais_specific_note": "Renewal requires proof the contract still exists at time of renewal application.",
+      "verify_official_source": true
+    },
+    "G": {
+      "description": "Cross-border commuter permit - holder lives outside Switzerland (e.g. France, Italy) and commutes to work in Valais.",
+      "valais_specific_note": "Requires proof of weekly return to the country of residence; tax treatment depends on bilateral agreements with the neighboring country.",
+      "verify_official_source": true
+    },
+    "C": {
+      "description": "Settlement permit (permanent residence) - no longer employer-tied, no quota restriction.",
+      "valais_specific_note": "Eligibility depends on years of prior residence (varies by nationality/agreement) - verify current thresholds.",
+      "verify_official_source": true
+    }
+  },
+
+  "scenario_notes": {
+    "JOB_CHANGE": "For non-EU B/L permit holders, a new employer in Valais typically requires re-approval by SPM before starting the new role - verify whether the current permit's employer restriction applies.",
+    "PERMIT_RENEWAL": "Valais SPM renewal applications are commonly recommended to be submitted well before expiry (a specific lead time is NOT confirmed here - verify official guidance) to avoid a gap in authorized stay.",
+    "FAMILY_TRANSFER": "Family reunification (regroupement familial) has its own eligibility conditions (housing size/income thresholds may apply) separate from the primary permit holder's conditions - verify current thresholds with SPM.",
+    "CANTON_CHANGE": "Moving from Valais to another canton (or vice versa) requires de-registration from the Valais commune and registration in the new canton, plus that canton's own SPM-equivalent approval - it is not automatic.",
+    "CONTRACT_TERMINATION": "Loss of employment can affect permit validity for non-EU permit holders in particular - there is typically a limited grace period to find new employment or leave; verify current grace period rules with SPM Valais."
+  }
+}

@@ -1,0 +1,1 @@
+Reserved for real DB migration scripts (e.g. Alembic) once the project moves off plain sqlite3 DDL-in-Python (see db/database.py's init_db()). No migration tool is wired up yet - see the product roadmap's Phase 2 (multi-tenancy, PostgreSQL).

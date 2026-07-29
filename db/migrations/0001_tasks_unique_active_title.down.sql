@@ -1,0 +1,26 @@
+-- =====================================================================
+-- Migration 0001 (down): remove the task idempotency guard.
+--
+-- Reversibility
+-- -------------
+-- The SCHEMA change is fully reversible: dropping the index restores the
+-- previous (unconstrained) behaviour, and db.database.add_task() will
+-- then insert unconditionally again - its ON CONFLICT clause needs this
+-- index as its arbiter, so the application code must be rolled back
+-- together with this migration.
+--
+-- The DATA change in step 2 of the up migration (deletion of duplicate
+-- active rows) is NOT reversible. Those rows carried no information the
+-- surviving row does not also carry - identical case_id, title, status
+-- and tenant_id, with any due_date preserved onto the survivor by step 1
+-- - so nothing of business value is lost. Even so, take a backup of
+-- `tasks` before applying the up migration if the environment requires
+-- byte-for-byte restorability:
+--
+--     CREATE TABLE tasks_backup_0001 AS SELECT * FROM tasks;
+--
+-- Run standalone with:
+--     psql --single-transaction -f 0001_tasks_unique_active_title.down.sql
+-- =====================================================================
+
+DROP INDEX IF EXISTS uq_tasks_active_case_title;

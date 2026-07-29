@@ -1,0 +1,99 @@
+
+# =====================================================================
+# What must never enter the repository.
+#
+# This file has to exist before the first commit, not after it. Git
+# history is append-only in practice: a secret committed once stays
+# reachable in the object store even after a later commit removes it,
+# and every clone taken in between keeps its own copy.
+#
+# For ENCRYPTION_KEY that is not a rotation problem, it is a data-loss
+# problem. Rotating the key makes every field encrypted with the old one
+# permanently unreadable, so the realistic response to leaking it is to
+# keep using a key that is known to be exposed.
+# =====================================================================
+
+
+# ---------------------------------------------------------- secrets ---
+# The real configuration: PGPASSWORD, JWT_SECRET_KEY, ENCRYPTION_KEY,
+# MINIO_ROOT_PASSWORD, DEFAULT_ADMIN_PASSWORD.
+#
+# .env.example is deliberately NOT ignored - it is the documented shape
+# of this file and carries only placeholders.
+.env
+.env.*
+!.env.example
+
+
+# -------------------------------------------------------- databases ---
+# pg_dump output. These contain real case data, real people's names and
+# permit details, and the password hashes of every user. A dump is the
+# single most sensitive artefact this project produces.
+*.sql.gz
+backup*.sql
+*_backup.sql
+*.dump
+
+# db/migrations/*.sql are source, not data, and must stay tracked.
+!db/migrations/*.sql
+
+
+# ------------------------------------------------- customer content ---
+# Uploaded passports, contracts and permits, plus generated exports and
+# reports built from them. The README.md in each directory is what keeps
+# the directory itself in the tree.
+storage/documents/*
+storage/exports/*
+storage/reports/*
+!storage/*/README.md
+
+
+# ------------------------------------------------------------ python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments, under the names people actually use.
+.venv/
+venv/
+env/
+ENV/
+
+
+# ------------------------------------------------------------- tests ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+
+# --------------------------------------------------------------- ide ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+
+# -------------------------------------------------------------- os ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# ---------------------------------------------------------- runtime ---
+*.log
+logs/
+*.pid
+celerybeat-schedule*
+
+# Streamlit writes per-user credentials here. The committed
+# .streamlit/config.toml is project configuration and stays tracked.
+.streamlit/secrets.toml

@@ -1,0 +1,32 @@
+{
+  "permit_rules": {
+    "L": {
+      "risk": 30,
+      "steps": [
+        "Short-term contract validation",
+        "Check renewal probability"
+      ]
+    },
+    "B": {
+      "risk": 10,
+      "steps": [
+        "Long-term residence preparation",
+        "Check integration requirements"
+      ]
+    },
+    "F": {
+      "risk": 50,
+      "steps": [
+        "Temporary admission review",
+        "Social support eligibility check"
+      ]
+    },
+    "G": {
+      "risk": 20,
+      "steps": [
+        "Cross-border worker validation",
+        "Tax & insurance setup"
+      ]
+    }
+  }
+}

@@ -1,0 +1,60 @@
+# The Dockerfile uses `COPY . .`, so anything not excluded here is baked
+# into every image layer - readable by anyone who can pull the image,
+# and not removable by deleting the file in a later layer.
+
+# ---------------- Secrets ----------------
+# .env holds JWT_SECRET_KEY, ENCRYPTION_KEY and the database password.
+# It must never enter an image: docker-compose.yml injects these through
+# the container environment instead, and config/environment.py treats a
+# missing .env as the normal case.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------- Local database/state dumps ----------------
+*.sql
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+
+# ---------------- Version control and local backups ----------------
+.git
+.gitignore
+.backup-*
+*.bak
+*.orig
+
+# ---------------- Python build artefacts ----------------
+# Stale .pyc files compiled against a different interpreter are a real
+# source of "works locally, fails in the container" bugs.
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ---------------- Test and tooling caches ----------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# ---------------- Editor and OS noise ----------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---------------- Documentation ----------------
+# Not needed at runtime; excluded so a doc edit does not invalidate the
+# image layer cache.
+CHANGELOG.md

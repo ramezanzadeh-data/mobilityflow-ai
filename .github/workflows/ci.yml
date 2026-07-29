@@ -1,0 +1,172 @@
+# =====================================================================
+# Continuous integration.
+#
+# This suite is unusual in that most of it is not testing features - it
+# is holding down properties that were violated once already: tenant
+# isolation, HTML escaping, role normalisation, i18n key coverage, the
+# absence of hardcoded UI text. Those are exactly the regressions a
+# developer does not notice while making an unrelated change, which is
+# why they have to run on every push rather than on request.
+#
+# It also matters commercially. An enterprise buyer's technical due
+# diligence asks whether tests run automatically and whether the answer
+# is visible. "Yes, on every commit, here is the badge" is a different
+# conversation from "we run them locally".
+# =====================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# A second push to the same branch makes the first run's answer
+# irrelevant. Cancelling it keeps the queue honest about which commit
+# the visible status refers to.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  secrets:
+    name: No secrets or customer data in the tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runs before the tests, and independently of them. A commit that
+      # exposes ENCRYPTION_KEY is not made acceptable by passing its
+      # tests, and the sooner it is visible the smaller the number of
+      # clones that already have a copy.
+      - name: Refuse tracked secrets and database dumps
+        run: |
+          set -euo pipefail
+
+          failed=0
+
+          # .env.example is the documented template and carries only
+          # placeholders; it is expected to be tracked.
+          if git ls-files | grep -E '^\.env$|^\.env\.' | grep -v '^\.env\.example$'; then
+            echo "::error::A .env file is tracked. It holds PGPASSWORD, JWT_SECRET_KEY and ENCRYPTION_KEY."
+            failed=1
+          fi
+
+          # db/migrations/*.sql are source. Anything else ending in .sql
+          # at this scale is a pg_dump, which contains real case data and
+          # every user's password hash.
+          if git ls-files '*.sql' | grep -v '^db/migrations/'; then
+            echo "::error::A database dump is tracked. Dumps contain personal data and password hashes."
+            failed=1
+          fi
+
+          if git ls-files 'storage/documents/*' | grep -v 'README.md'; then
+            echo "::error::Uploaded customer documents are tracked."
+            failed=1
+          fi
+
+          exit $failed
+
+  tests:
+    name: Test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # Same major version as docker-compose.yml. Testing against a
+      # different one would leave row-level security and the migration
+      # DDL unverified on the version that actually ships.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mobilityflow
+          POSTGRES_PASSWORD: ci-only-not-a-real-secret
+          POSTGRES_DB: mobilityflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mobilityflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # No .env exists in CI. bootstrap.load_environment treats that as
+      # normal and these variables supply the configuration directly -
+      # the same path a container takes.
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: mobilityflow
+      PGPASSWORD: ci-only-not-a-real-secret
+      PGDATABASE: mobilityflow
+
+      # conftest.py derives "<database>_test" by default. Naming it
+      # explicitly documents, in the run's own configuration, that the
+      # suite never touches the database named above.
+      MOBILITYFLOW_TEST_DATABASE: mobilityflow_test
+
+      # JWT_SECRET_KEY and ENCRYPTION_KEY are deliberately absent:
+      # conftest.py applies test-only values with setdefault, and a
+      # secret in a workflow file would be a secret in the repository.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the Dockerfile (python:3.11-slim). A suite green on a
+          # version the product does not ship is not evidence.
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The suite skips database-backed modules when Postgres is
+      # unreachable, which is right on a laptop and wrong here: in CI
+      # that would turn an unavailable database into a green run. This
+      # fails the job instead.
+      - name: Require the database to be reachable
+        run: |
+          python - <<'PYTHON'
+          import os
+          import sys
+
+          import psycopg2
+
+          try:
+              psycopg2.connect(
+                  host=os.environ["PGHOST"],
+                  port=os.environ["PGPORT"],
+                  dbname="postgres",
+                  user=os.environ["PGUSER"],
+                  password=os.environ["PGPASSWORD"],
+              ).close()
+          except psycopg2.OperationalError as error:
+              sys.exit(
+                  "PostgreSQL is not reachable, so the database-backed "
+                  f"tests would silently skip: {error}"
+              )
+
+          print("PostgreSQL reachable.")
+          PYTHON
+
+      - name: Run tests
+        run: python -m pytest -v --tb=short --durations=10
+
+      # Guard tests only prove that the strings ship; they cannot prove
+      # the layout survives a longer language. Pseudo-localization is how
+      # that is checked before a translator is paid, so the suite has to
+      # pass with it switched on as well.
+      - name: Run tests with pseudo-localization enabled
+        env:
+          MOBILITYFLOW_PSEUDO_LOCALE: "1"
+        run: python -m pytest -q --tb=short

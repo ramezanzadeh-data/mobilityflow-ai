@@ -1,0 +1,54 @@
+# Streamlit configuration.
+#
+# Committed rather than left to defaults: the defaults are tuned for a
+# developer running a notebook-style app locally, and several of them are
+# wrong for a multi-tenant product holding immigration data.
+
+[client]
+
+# The default is "full", which renders the entire Python traceback into
+# the browser. A customer submitting a form saw:
+#
+#   psycopg2.errors.UndefinedColumn: column "arrival_date" of relation
+#   "cases" does not exist LINE 20: arrival_date, ^
+#   File "/app/db/database.py", line 1015, in add_case
+#
+# That is internal file structure, table and column names, and a fragment
+# of the SQL, handed to whoever triggered the error - including, on a
+# hosted deployment, anyone who can reach the login page. It is both an
+# information disclosure and the least professional thing a product can
+# show a paying user.
+#
+# "none" shows a short apology instead. The traceback still reaches the
+# server logs, which is where an operator should be reading it.
+showErrorDetails = "none"
+
+# The sidebar is the product frame - brand, tenant, navigation. It should
+# be open on arrival rather than requiring a click to discover.
+showSidebarNavigation = false
+
+
+[server]
+
+# Usage statistics are sent to Streamlit by default. A Swiss customer
+# processing immigration data will ask what leaves the deployment, and
+# "nothing" is a far easier answer than explaining what telemetry
+# contains.
+gatherUsageStats = false
+
+# Uploaded documents are passports and employment contracts. 200MB is
+# the default; 25MB is generous for a scanned PDF and limits how much a
+# single request can cost the server.
+maxUploadSize = 25
+
+
+[theme]
+
+# Matches the tokens in apps/web/components/theme.py. Set here as well
+# because Streamlit renders its own chrome - widget borders, focus
+# rings, the file uploader - before any stylesheet is injected, and
+# without this those elements arrive in Streamlit's default red.
+primaryColor = "#1d4ed8"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
+textColor = "#0f172a"

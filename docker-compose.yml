@@ -1,0 +1,175 @@
+# =========================
+# MobilityFlow AI - docker-compose
+# =========================
+# Streamlit + FastAPI + PostgreSQL + Redis + a Celery worker for
+# background jobs (OCR, AI generation, PDF export, email/checklist/
+# letter generation, webhook notifications) + MinIO for object storage
+# (S3-compatible - swap for real AWS S3 in production by just changing
+# the S3_* env vars, no code changes needed).
+
+services:
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=mobilityflow
+      - POSTGRES_USER=mobilityflow
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your .env file - see .env.example. Do not use the old change_me default.}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Published on 5433, not the conventional 5432, because a locally
+      # installed PostgreSQL service is extremely common on developer
+      # machines. Windows permits two processes to bind 0.0.0.0:5432
+      # simultaneously, and which one receives an incoming connection
+      # then depends on bind order - so the collision does not fail
+      # loudly, it silently routes the app to the wrong server after an
+      # unrelated restart. A dedicated port removes the ambiguity.
+      #
+      # Bound to 127.0.0.1 rather than all interfaces: nothing outside
+      # this machine has any reason to reach the database directly, and
+      # the previous 0.0.0.0 binding exposed it to the whole LAN.
+      #
+      # Containers are unaffected - they reach Postgres over the compose
+      # network at postgres:5432 (see PGHOST/PGPORT in app_env below),
+      # which is independent of the published host port. Only clients
+      # running directly on the host use 5433 (see PGPORT in .env).
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mobilityflow -d mobilityflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=mobilityflow
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in your .env file - see .env.example. Do not use the old change_me_too default.}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  streamlit:
+    build: .
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: >
+      streamlit run apps/web/app.py
+      --server.port=8501
+      --server.address=0.0.0.0
+    # Makes host.docker.internal resolve to the Docker host on every
+    # platform (a no-op on Docker Desktop, required on Linux) so
+    # OLLAMA_HOST stays valid regardless of where compose runs.
+    extra_hosts: &host_gateway
+      - "host.docker.internal:host-gateway"
+    environment: &app_env
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGDATABASE=mobilityflow
+      - PGUSER=mobilityflow
+      - PGPASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your .env file - see .env.example.}
+      - REDIS_URL=redis://redis:6379/0
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET=mobilityflow-documents
+      - S3_ACCESS_KEY_ID=mobilityflow
+      - S3_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in your .env file - see .env.example.}
+      - S3_REGION=us-east-1
+      # --- Ollama (LLM runtime, runs on the Docker host) ---
+      # Read natively by the `ollama` Python client and by
+      # core/ai/ollama_client.py, so one variable configures every
+      # Ollama caller. Override in .env to target a remote instance.
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      # Required - there is no insecure fallback for any of these.
+      # See .env.example for how to generate each one.
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:?Set DEFAULT_ADMIN_USERNAME in your .env file.}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:?Set DEFAULT_ADMIN_PASSWORD in your .env file to something other than the old "admin" default.}
+      - DEFAULT_ADMIN_COMPANY=${DEFAULT_ADMIN_COMPANY:?Set DEFAULT_ADMIN_COMPANY in your .env file.}
+      # Quoted: the ':?' error messages below contain a colon followed by a
+      # space, which YAML would otherwise parse as a mapping instead of a
+      # plain string list item (services.<svc>.environment.[14]:
+      # unexpected type map[string]interface {}).
+      - 'JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in your .env file. Generate one with: python -c "import secrets; print(secrets.token_hex(32))"}'
+      - 'ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in your .env file. Generate one with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"}'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  api:
+    build: .
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: >
+      uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    extra_hosts: *host_gateway
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      streamlit:
+        condition: service_started
+
+  celery_worker:
+    build: .
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A workers.celery_app inspect ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: >
+      celery -A workers.celery_app worker --loglevel=info --concurrency=4
+    extra_hosts: *host_gateway
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+
+volumes:
+  pgdata:
+    name: mobilityflow_ai1_pgdata
+    external: true
+
+  miniodata:
+    name: mobilityflow_ai1_miniodata
+    external: true

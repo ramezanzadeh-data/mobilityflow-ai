@@ -1,0 +1,1 @@
+Reserved for uploaded case documents (PDFs, ID scans, etc.). Currently, uploaded document bytes are processed in-memory by core/documents/* and not persisted to disk here - see db/database.py's 'documents' table for the metadata that IS persisted today.
