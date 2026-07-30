@@ -1,0 +1,123 @@
+{
+  "_meta": {
+    "schema_version": "1.0",
+    "purpose": "Weights used by core/rules/risk.py to produce a case complexity score, held as data so each one can carry its own provenance.",
+    "what_this_score_is": "A complexity and attention indicator, for sorting a caseload. It says which files are likely to need more work and more time, and it is derived from how many authorities are involved, how many approval layers apply, and how much can go wrong procedurally.",
+    "what_this_score_is_not": "It is not a legal assessment, not a probability of refusal, and not a compliance verdict. No Swiss authority publishes risk weights for immigration cases, so unlike the statutory deadlines in obligations.json these numbers cannot be traced to a provision - there is no provision to trace them to. Every weight below is therefore marked 'heuristic'.",
+    "why_they_are_here_rather_than_in_code": "They were hardcoded in core/rules/risk.py: +40 for a non-EU national, +60 for an N permit, +10 for Valais. Read in isolation each looks researched, and the screen renders the total as 'HIGH Risk 100' beside a red badge with no indication that the arithmetic behind it is judgement rather than law. A customer asking 'why is this case 100?' deserves an answer, and 'those are the numbers we chose' is only an acceptable answer if the product says so on the same screen.",
+    "basis_values": {
+      "statutory": "Traceable to a named provision. Nothing in this file qualifies; the field exists so that a weight which one day can be traced is distinguishable from the rest.",
+      "procedural": "Reflects a documented administrative step - an approval layer that demonstrably exists, such as SEM approval being required in addition to cantonal approval for non-EU/EFTA cases. The existence of the step is sourced; the number attached to it is not.",
+      "heuristic": "Operational judgement. Neither the step nor the number is sourced."
+    },
+    "how_to_improve_this": "Not by researching the numbers - there is nothing to research. Either replace the composite score with counts of checkable conditions (missing documents, uncomputable deadlines, overdue obligations), which is the defensible form, or have a Swiss immigration specialist set these weights and record their name against them, which makes the judgement attributable."
+  },
+  "weights": {
+    "nationality": {
+      "NON_EU": {
+        "points": 40,
+        "label": "Non-EU/EFTA national",
+        "basis": "procedural",
+        "reason": "Non-EU/EFTA cases pass through two approval layers rather than one: cantonal approval and, in addition, federal approval by SEM together with quota availability. The additional layer is documented in the SEM guidance; the weight of 40 is not.",
+        "source_url": "https://www.sem.admin.ch/dam/sem/de/data/rechtsgrundlagen/weisungen/auslaender/weisungen-aug-kap4-d.pdf"
+      },
+      "EU": {
+        "points": 5,
+        "label": "EU/EFTA national",
+        "basis": "heuristic",
+        "reason": "EU/EFTA cases are registration-based rather than quota-subject, so fewer authorities are involved. The distinction is real and rests on the free movement agreement, but no source for it was read when these weights were written - so this is marked heuristic rather than procedural until one is. The number itself is judgement either way.",
+        "source_url": null
+      }
+    },
+    "permit": {
+      "N": {
+        "points": 60,
+        "label": "Permit N (asylum seeker)",
+        "basis": "heuristic",
+        "reason": "Work authorisation for asylum seekers is restricted and revocable, and status can change during the case.",
+        "source_url": null
+      },
+      "F": {
+        "points": 45,
+        "label": "Permit F (temporary admission)",
+        "basis": "heuristic",
+        "reason": "Temporarily admitted status carries conditions that can change during the case.",
+        "source_url": null
+      },
+      "S": {
+        "points": 35,
+        "label": "Permit S (protection status)",
+        "basis": "heuristic",
+        "reason": "Protection status is granted and withdrawn by federal decision outside the employer's control.",
+        "source_url": null
+      },
+      "NO_PERMIT": {
+        "points": 30,
+        "label": "No permit yet",
+        "basis": "procedural",
+        "reason": "Work may not begin until an authorisation exists (Art. 11 AIG), so a case with no permit has the whole authorisation process still ahead of it.",
+        "source_url": "https://www.sem.admin.ch/dam/sem/de/data/rechtsgrundlagen/weisungen/auslaender/weisungen-aug-kap4-d.pdf"
+      },
+      "L": {
+        "points": 20,
+        "label": "Permit L (short-term)",
+        "basis": "heuristic",
+        "reason": "Short validity means renewal or conversion arrives quickly.",
+        "source_url": null
+      },
+      "G": {
+        "points": 20,
+        "label": "Permit G (cross-border)",
+        "basis": "heuristic",
+        "reason": "Cross-border status adds residence and tax questions in a second jurisdiction.",
+        "source_url": null
+      },
+      "B": {
+        "points": 15,
+        "label": "Permit B (residence)",
+        "basis": "heuristic",
+        "reason": "Renewable residence permit; for non-EU holders often tied to employer and canton.",
+        "source_url": null
+      },
+      "C": {
+        "points": 5,
+        "label": "Permit C (settlement)",
+        "basis": "heuristic",
+        "reason": "Settlement permits are the most stable status and need the least intervention.",
+        "source_url": null
+      }
+    },
+    "canton": {
+      "VALAIS": {
+        "points": 10,
+        "label": "Valais cantonal procedure",
+        "basis": "heuristic",
+        "reason": "Reflects that a cantonal authority (SPM) reviews the file before any federal step, and that communal practice varies within the canton - renewal windows differ between Sierre, Grimisuat and other communes. Both observations are sourced; the weight is not.",
+        "source_url": "https://www.vs.ch/web/spm/permis-de-s%C3%A9jour"
+      }
+    },
+    "business_mode": {
+      "RELOCATION": {
+        "points": 20,
+        "label": "Relocation mandate",
+        "basis": "heuristic",
+        "reason": "Housing, family and registration steps run alongside the permit process.",
+        "source_url": null
+      },
+      "RECRUITMENT": {
+        "points": 10,
+        "label": "Recruitment mandate",
+        "basis": "heuristic",
+        "reason": "Start date is usually fixed before the authorisation exists, compressing the timeline.",
+        "source_url": null
+      },
+      "SME": {
+        "points": 5,
+        "label": "SME mandate",
+        "basis": "heuristic",
+        "reason": "Smaller employers typically have no in-house mobility function.",
+        "source_url": null
+      }
+    }
+  }
+}

@@ -52,8 +52,36 @@ _CACHE = {}
 
 
 # --- Verification status -------------------------------------------------
+#
+# Three states, not two, because there are three genuinely different
+# things a rule can be - and collapsing the middle one costs both ways.
+#
+#   unverified  nothing has been confirmed
+#   sourced     traced to a named provision in an official text, with a
+#               URL and the date it was read
+#   verified    a named specialist confirmed it applies as stated
+#
+# SOURCED exists because the work of finding the provision and the work
+# of confirming it applies are different jobs done by different people.
+# Without it, a rule researched back to Art. 12 AIG sits in the same
+# bucket as one nobody has looked at - which understates what is known
+# and leaves the specialist re-doing the research instead of reviewing
+# it.
+#
+# It is emphatically not a synonym for verified. The federal text is a
+# floor: communal practice differs from it, and the edge cases - which
+# date starts the clock when a contract begins remotely and the employee
+# arrives three weeks later - are not written down anywhere. A citation
+# answers "what does the law say"; only a specialist answers "what
+# happens to this case".
+#
+# So the product may say "traced to Art. 12 AIG" on a SOURCED rule, and
+# must still not present it as advice. is_verified() below stays true
+# only for VERIFIED, and every warning that counts unverified rules keeps
+# counting these.
 
 VERIFIED = "verified"
+SOURCED = "sourced"
 UNVERIFIED = "unverified"
 SUPERSEDED = "superseded"
 
@@ -113,7 +141,29 @@ class Obligation:
 
     @property
     def is_verified(self) -> bool:
+        """
+        Confirmed by a named person who takes responsibility for it.
+
+        Deliberately false for SOURCED. A citation establishes what the
+        federal text says; it does not establish that this is what
+        happens to this case in this commune, and the whole value of the
+        distinction is lost the moment "we found the article" starts
+        reading as "a specialist signed this off".
+        """
+
         return self.verification_status == VERIFIED
+
+    @property
+    def is_sourced(self) -> bool:
+        """
+        Traced to a named provision in an official text.
+
+        True for VERIFIED as well: anything a specialist confirmed is at
+        least sourced, and a caller asking "can we show where this comes
+        from?" wants yes in both cases.
+        """
+
+        return self.verification_status in (SOURCED, VERIFIED)
 
     @property
     def is_actionable(self) -> bool:

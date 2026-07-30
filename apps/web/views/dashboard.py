@@ -58,9 +58,33 @@ from i18n.labels import (
     mode_label,
     workflow_state_label
 )
+from core.cantons import supported_cantons
 
 
-CANTON_FILTER_OPTIONS = ["All", "VAUD", "VALAIS"]
+def canton_filter_options(cases=None):
+    """
+    "All", then every covered canton, then any canton actually present in
+    the data that is no longer covered.
+
+    The last part matters. This was a fixed ["All", "VAUD", "VALAIS"],
+    and narrowing the scope by editing that list would have made existing
+    cases in an uncovered canton unfilterable - visible in the table, but
+    with no way to isolate them. A customer cannot clean up records they
+    cannot select.
+    """
+
+    options = ["All"] + list(supported_cantons())
+
+    for case in cases or []:
+
+        canton = case[3] if len(case) > 3 else None
+
+        if canton and canton not in options:
+            options.append(canton)
+
+    return options
+
+
 PERMIT_FILTER_OPTIONS = ["All", "NO_PERMIT", "N", "F", "S", "L", "B", "C", "G"]
 NATIONALITY_FILTER_OPTIONS = ["All", "EU", "NON_EU"]
 MODE_FILTER_OPTIONS = ["All", "SME", "RELOCATION", "RECRUITMENT"]
@@ -168,7 +192,7 @@ def _render_kpis_and_charts(cases):
         )
 
 
-def _render_search_and_filters(company, lang):
+def _render_search_and_filters(company, lang, cases=None):
 
     with st.expander(t("search_filter_expander"), expanded=False):
 
@@ -232,12 +256,22 @@ def _render_search_and_filters(company, lang):
 
         f1, f2, f3, f4 = st.columns(4)
 
+        canton_options = canton_filter_options(cases)
+
         with f1:
             filter_canton = st.selectbox(
                 t("filter_canton_label"),
-                CANTON_FILTER_OPTIONS,
-                index=CANTON_FILTER_OPTIONS.index(
-                    st.session_state.get("dash_filter_canton", "All")
+                canton_options,
+                # A saved filter can name a canton that has since left the
+                # options. .index() would raise ValueError and take the
+                # whole dashboard down, so fall back to "All".
+                index=(
+                    canton_options.index(
+                        st.session_state.get("dash_filter_canton", "All")
+                    )
+                    if st.session_state.get("dash_filter_canton", "All")
+                    in canton_options
+                    else 0
                 ),
                 format_func=lambda v: (
                     t("filter_all_option") if v == "All"
@@ -951,7 +985,10 @@ def show_dashboard():
     st.write("")
 
 
-    filters = _render_search_and_filters(company, lang)
+    # cases is passed so the canton filter can offer a canton that exists
+    # in this tenant's data but is no longer covered - otherwise those
+    # records are visible in the table with no way to select them.
+    filters = _render_search_and_filters(company, lang, cases)
 
     filtered_cases = _apply_filters_and_sort(cases, filters)
 

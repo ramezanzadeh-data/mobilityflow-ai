@@ -44,6 +44,8 @@ REQUIRED_COLUMNS = {
         "arrival_date": "0003_case_statutory_dates",
         "contract_start_date": "0003_case_statutory_dates",
         "permit_expiry_date": "0003_case_statutory_dates",
+        "correspondence_language": "0006_case_correspondence_language",
+        "commune": "0007_case_commune",
     },
     "tasks": {
         "due_date": "0001_tasks_unique_active_title",

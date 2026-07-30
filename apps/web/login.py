@@ -33,6 +33,17 @@ def language_selector(key="login_language"):
     # never offers it.
     languages = supported_languages()
 
+    # A selector with one option is a control that cannot do anything.
+    # It reads as an unfinished feature rather than a deliberate scope,
+    # and every user who clicks it learns the interface has choices that
+    # are not choices.
+    #
+    # The product currently ships English only - see SHIPPED_LANGUAGES in
+    # i18n/translator.py. Adding a language back there makes this appear
+    # again with no change here.
+    if len(languages) < 2:
+        return current
+
     chosen = st.radio(
         t("language_label"),
         languages,

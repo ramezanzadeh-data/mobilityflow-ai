@@ -3,31 +3,36 @@
     "schema_version": "1.0",
     "purpose": "Statutory and administrative obligations with a deadline, used by core/rules/obligations.py to turn a case into a dated action list.",
     "disclaimer": "⚠️ LEGAL VERIFICATION REQUIRED. Every rule in this file is UNVERIFIED unless its own 'verification' block says otherwise. These are procedural structures drawn from general knowledge of the Swiss immigration system, not from live official sources, and they are not legal advice. A missed immigration deadline has consequences for a real person's right to live and work in Switzerland - no rule here may be relied on for a real case until a licensed Swiss immigration specialist has reviewed it and recorded that review below.",
-    "how_to_verify": "For each rule: confirm the deadline and its legal basis against the canton's official migration office and the federal SEM, then set verification.status to 'verified', fill reviewed_by, reviewed_on and source_url, and record the exact provision in legal_basis.",
-    "why_rules_are_data": "Immigration deadlines change, differ per canton, and must be auditable. Holding them as data rather than in code means a specialist can review a diff, a customer can be shown exactly which rule produced a date, and a change does not require a release."
+    "how_to_verify": "Two separate jobs, done by different people. First: find the provision, record source_url, legal_basis and sourced_on, and set status to 'sourced'. Second: a licensed Swiss immigration specialist confirms it applies as stated for this canton and its communes, records reviewed_by and reviewed_on, and sets status to 'verified'. The first does not substitute for the second - it makes it a review rather than research.",
+    "why_rules_are_data": "Immigration deadlines change, differ per canton, and must be auditable. Holding them as data rather than in code means a specialist can review a diff, a customer can be shown exactly which rule produced a date, and a change does not require a release.",
+    "scope": "Canton Valais only. Every rule here is scoped to VALAIS explicitly rather than left null ('applies everywhere'): a deadline reviewed for one canton is evidence about that canton and nothing else. Adding a canton means adding its own rules and having them reviewed separately - see core/cantons.py.",
+    "research_note": "Rules were traced to their sources on 2026-07-30. Two reached 'sourced'. The third was left 'unverified' on purpose: the research found that Valais communes publish conflicting renewal windows, which is a finding worth more than a plausible number. Recording the conflict is what lets a specialist resolve it in one sitting instead of discovering it case by case."
   },
-
   "verification_statuses": {
-    "verified": "Checked against an official source by a named reviewer on a recorded date.",
-    "unverified": "Structure is plausible but nothing has been confirmed. Shown to users with a warning; must not be presented as legal advice.",
+    "verified": "A named Swiss immigration specialist confirmed, on a recorded date, that this rule applies as stated. Only this status may be relied on for a real case.",
+    "sourced": "Traced to a named provision in an official text, with the URL and the date it was read. Establishes what the law says - not that it is what happens to a given case in a given commune. Communal practice differs from the federal floor, and edge cases are not written down. Still shown to users with a warning.",
+    "unverified": "Structure is plausible but nothing has been confirmed and no source is recorded. Shown to users with a warning; must not be presented as legal advice.",
     "superseded": "Known to be out of date. Retained so historical cases can still explain the date they were given."
   },
-
   "trigger_dates": {
     "arrival_date": "The day the employee physically arrives in Switzerland.",
     "contract_start_date": "First day of the employment contract.",
     "permit_expiry_date": "Expiry printed on the current permit.",
     "case_created_date": "When the case was opened in this system. A fallback only - it is an internal event, not a legal one, and any deadline derived from it is an estimate."
   },
-
   "obligations": [
     {
       "id": "commune_registration",
       "title": "Register at the commune (Contrôle des habitants)",
       "description": "New residents must register in person at their commune's residents' registration office.",
       "applies_to": {
-        "cantons": ["VALAIS", "VAUD"],
-        "nationalities": ["EU", "NON_EU"],
+        "cantons": [
+          "VALAIS"
+        ],
+        "nationalities": [
+          "EU",
+          "NON_EU"
+        ],
         "permits": null,
         "business_modes": null
       },
@@ -35,13 +40,15 @@
       "offset_days": 14,
       "severity": "statutory",
       "consequence": "Late registration can attract an administrative penalty and complicates the permit file.",
-      "legal_basis": "Not yet recorded - see how_to_verify.",
+      "legal_basis": "Art. 12 AIG (Ausländer- und Integrationsgesetz, SR 142.20) - Anmeldepflicht. Confirmed for Valais by the cantonal Service de la population et des migrations (SPM), which states a 14-day deadline from arrival for the annonce d'arrivée to the commune's Contrôle des habitants.",
       "verification": {
-        "status": "unverified",
-        "source_url": null,
+        "status": "sourced",
+        "source_url": "https://www.sem.admin.ch/dam/sem/de/data/rechtsgrundlagen/weisungen/auslaender/weisungen-aug-d.pdf",
         "reviewed_by": null,
         "reviewed_on": null,
-        "note": "The canton knowledge base states 'typically within 14 days of arrival' and flags it as requiring official confirmation. Cantons and communes may differ; confirm per commune before relying on this."
+        "note": "Federal law and the Valais cantonal service agree on 14 days from arrival, and the same 14-day period is stated for reporting later changes (move, marriage, change of employer). What a specialist still has to confirm: whether the commune in question counts from physical arrival or from taking up residence, and what it requires in the file at the moment of registration - communes publish their own forms and lists.",
+        "sourced_on": "2026-07-30",
+        "sourced_from": "SEM Weisungen AIG (federal) + Canton du Valais SPM (cantonal)"
       }
     },
     {
@@ -49,22 +56,32 @@
       "title": "Submit permit renewal application",
       "description": "A renewal application should be filed well before the current permit expires, so the holder is not left without valid status while it is processed.",
       "applies_to": {
-        "cantons": null,
-        "nationalities": ["EU", "NON_EU"],
-        "permits": ["B", "L"],
+        "cantons": [
+          "VALAIS"
+        ],
+        "nationalities": [
+          "EU",
+          "NON_EU"
+        ],
+        "permits": [
+          "B",
+          "L"
+        ],
         "business_modes": null
       },
       "trigger": "permit_expiry_date",
       "offset_days": -90,
       "severity": "statutory",
       "consequence": "Lapsed status affects the right to work and can require leaving the country while a new application is processed.",
-      "legal_basis": "Not yet recorded - see how_to_verify.",
+      "legal_basis": "Renewal is filed with the commune's Contrôle des habitants before the permit expires. No single figure applies canton-wide: published communal practice in Valais differs.",
       "verification": {
         "status": "unverified",
-        "source_url": null,
+        "source_url": "https://www.sierre.ch/fr/renouvellement-permis-2451.html",
         "reviewed_by": null,
         "reviewed_on": null,
-        "note": "The 90-day lead time is a common practice figure, NOT a confirmed statutory period. Must be verified per canton and permit type before use."
+        "note": "DELIBERATELY LEFT UNVERIFIED, and the reason is the finding itself: three Valais communes publish three different windows. General guidance says a renewal may be filed at the earliest 3 months before expiry; Sierre says at the earliest 2 months; Grimisuat states applications are to be filed 14 days before expiry. These are not the same rule. The -90 day offset currently configured matches the widest of them and is therefore wrong for at least two communes. A specialist must decide what this product should compute - most likely a per-commune value, which needs a commune field on the case that does not exist yet.",
+        "sourced_on": "2026-07-30",
+        "sourced_from": "Communes of Sierre, Grimisuat and Monthey (Valais)"
       }
     },
     {
@@ -72,8 +89,12 @@
       "title": "Confirm the permit is in place before employment starts",
       "description": "Employment should not begin before the required authorisation is in place.",
       "applies_to": {
-        "cantons": null,
-        "nationalities": ["NON_EU"],
+        "cantons": [
+          "VALAIS"
+        ],
+        "nationalities": [
+          "NON_EU"
+        ],
         "permits": null,
         "business_modes": null
       },
@@ -81,13 +102,15 @@
       "offset_days": 0,
       "severity": "statutory",
       "consequence": "Employing someone without the required authorisation exposes the employer to sanctions.",
-      "legal_basis": "Not yet recorded - see how_to_verify.",
+      "legal_basis": "Art. 11 AIG (SR 142.20) - Bewilligungspflicht. Gainful employment requires an authorisation regardless of the length of stay, and work may only begin once it has been granted. Employer and employee are both exposed to criminal proceedings if it does not.",
       "verification": {
-        "status": "unverified",
-        "source_url": null,
+        "status": "sourced",
+        "source_url": "https://www.sem.admin.ch/dam/sem/de/data/rechtsgrundlagen/weisungen/auslaender/weisungen-aug-kap4-d.pdf",
         "reviewed_by": null,
         "reviewed_on": null,
-        "note": "Direction of the obligation is well established; the exact scope and employer duties must be confirmed before this is shown as advice."
+        "note": "The prohibition itself is unambiguous: no work before the authorisation exists. The lead time is not in the statute - cantonal guidance commonly advises filing at least six weeks before the intended start, longer where SEM approval is also required. A specialist should set the offset used here to the lead time SPM Valais actually works to, which is a practice figure rather than a legal one.",
+        "sourced_on": "2026-07-30",
+        "sourced_from": "SEM Weisungen AIG Kapitel 4 (Aufenthalt mit Erwerbstätigkeit)"
       }
     }
   ]

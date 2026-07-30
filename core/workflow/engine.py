@@ -70,6 +70,13 @@ def build_workflow(nationality, permit, canton, mode):
         ])
 
 
+    # Canton-specific steps come from a canton with a knowledge base.
+    #
+    # The Vaud branch that stood here added one commune registration step
+    # with nothing behind it - no data/canton_vaud_rules.json, no source,
+    # no review. A user in Vaud was handed a checklist that looked like
+    # the Valais one and was not. Removed rather than left in place: it
+    # was not partial support, it was a guess presented as procedure.
     if canton == "VALAIS":
 
         workflow.extend([
@@ -77,14 +84,6 @@ def build_workflow(nationality, permit, canton, mode):
             "Commune registration (Valais)",
 
             "Cantonal approval"
-
-        ])
-
-    elif canton == "VAUD":
-
-        workflow.extend([
-
-            "Commune registration (Vaud)"
 
         ])
 

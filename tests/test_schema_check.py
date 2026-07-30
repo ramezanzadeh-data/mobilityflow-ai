@@ -174,4 +174,11 @@ def test_the_columns_the_code_writes_are_all_declared():
         "arrival_date",
         "contract_start_date",
         "permit_expiry_date",
+        # Migration 0006. Read by load_case() and passed to the prompt
+        # builders, so a deployment missing it breaks email generation.
+        "correspondence_language",
+        # Migration 0007. Selects the renewal window and the
+        # correspondence language, both of which differ between communes
+        # in the same canton.
+        "commune",
     }
