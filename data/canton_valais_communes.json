@@ -1,0 +1,65 @@
+{
+  "_meta": {
+    "schema_version": "1.0",
+    "canton_code": "VALAIS",
+    "purpose": "Per-commune practice that differs from the canton, read by core/rules/obligations.py and core/correspondence.py.",
+    "why_this_file_exists": "Tracing the obligation rules to their sources showed that two things the product computes are properties of the commune, not the canton. Permit renewal windows differ: general guidance says a renewal may be filed at the earliest 3 months before expiry, Sierre publishes 2 months, and Grimisuat states applications are filed 14 days before expiry. And Valais is officially bilingual, so the language a letter must be written in depends on where the case registers, not on the canton.",
+    "why_it_is_almost_empty": "Valais has over a hundred communes. Only the three below have been traced to a published source. The rest are deliberately absent rather than filled in from inference: a commune registry that looks researched and is not would be the same defect as the invented Vaud risk score this codebase already removed. An absent commune resolves to 'not known', which is a true statement the product can act on and a specialist can close.",
+    "how_to_extend": "One commune per entry. Record renewal_window_days only where the commune itself publishes it, with the URL it was read from and the date. Set verification.status to 'sourced' when traced to a published page, and to 'verified' only when a Swiss immigration specialist has confirmed it applies as stated.",
+    "sourced_on": "2026-07-30"
+  },
+
+  "communes": [
+    {
+      "name": "Sierre",
+      "aliases": ["Siders"],
+      "official_language": "fr",
+      "language_note": "Sierre sits close to the canton's language boundary; the commune administers in French. Siders is the German exonym.",
+      "renewal_window_days": 60,
+      "renewal_note": "The commune states a residence permit may be renewed at the earliest two months before the end of its validity - not the three months given in general cantonal guidance.",
+      "verification": {
+        "status": "sourced",
+        "source_url": "https://www.sierre.ch/fr/renouvellement-permis-2451.html",
+        "sourced_on": "2026-07-30",
+        "sourced_from": "Ville de Sierre, Contrôle des habitants",
+        "reviewed_by": null,
+        "reviewed_on": null,
+        "note": "Published by the commune itself. A specialist should confirm whether 'at the earliest two months' is also a deadline or only an opening date - the two readings produce different reminders."
+      }
+    },
+    {
+      "name": "Grimisuat",
+      "aliases": [],
+      "official_language": "fr",
+      "language_note": "French-speaking commune in the Sion district.",
+      "renewal_window_days": 14,
+      "renewal_note": "The commune's Bureau des étrangers states that applications to extend a residence authorisation are to be filed 14 days before expiry. This is materially different from Sierre's two months and from the three months in general guidance, and it is the finding that made a per-commune value necessary at all.",
+      "verification": {
+        "status": "sourced",
+        "source_url": "https://www.grimisuat.ch/fr/administration/services-communaux/population/bureau-des-etrangers-permis-de-sejour-504/",
+        "sourced_on": "2026-07-30",
+        "sourced_from": "Commune de Grimisuat, Bureau des étrangers",
+        "reviewed_by": null,
+        "reviewed_on": null,
+        "note": "Fourteen days is a short window and reads more like a minimum notice than an opening date. A specialist must establish which it is before this drives a reminder: getting it backwards means telling a customer they still have time when they do not."
+      }
+    },
+    {
+      "name": "Monthey",
+      "aliases": [],
+      "official_language": "fr",
+      "language_note": "French-speaking commune in the lower Valais.",
+      "renewal_window_days": null,
+      "renewal_note": "The commune publishes a page on permit attribution and renewal but no explicit window was established from it. Left null rather than filled in from the cantonal default - the whole point of this file is that the cantonal default is not reliably the commune's practice.",
+      "verification": {
+        "status": "unverified",
+        "source_url": "https://www.monthey.ch/N1528/permis-de-sejour-attribution-et-renouvellement.html",
+        "sourced_on": "2026-07-30",
+        "sourced_from": "Ville de Monthey",
+        "reviewed_by": null,
+        "reviewed_on": null,
+        "note": "Listed with a null window on purpose, so the commune is known to exist and known to be unresolved. A specialist closing this needs one phone call; a user meeting it in the product sees 'not known for this commune' rather than a number nobody checked."
+      }
+    }
+  ]
+}

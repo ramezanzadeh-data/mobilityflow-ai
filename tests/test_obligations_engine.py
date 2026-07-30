@@ -393,3 +393,164 @@ def test_every_shipped_rule_names_the_canton_it_was_written_for():
             f"stands the rule can never fire, so nobody will ever notice "
             f"if it is wrong."
         )
+
+
+# --------------------------------------------- sourced, but not verified ---
+
+def _obligation_with_status(status):
+    """
+    A bare Obligation carrying only a verification status.
+
+    Built by name rather than positionally so adding a field to the
+    dataclass does not silently shift what these tests are asserting
+    about - the defect this project has already had once, with case row
+    indices.
+    """
+
+    from core.rules.obligations import Obligation
+
+    return Obligation(
+        id=status,
+        title="",
+        description="",
+        due_date=None,
+        trigger="",
+        trigger_date=None,
+        offset_days=0,
+        severity="",
+        consequence="",
+        legal_basis="",
+        verification_status=status,
+        verification_note="",
+        source_url=None,
+        reviewed_by=None,
+        reviewed_on=None,
+        is_estimated=False,
+        missing_trigger=None,
+    )
+
+
+
+def test_sourced_is_a_third_state_not_a_synonym_for_verified():
+    """
+    The distinction the whole three-state design rests on.
+
+    Finding the provision and confirming it applies are different jobs.
+    A citation establishes what the federal text says; communal practice
+    differs from that floor, and the edge cases - which date starts the
+    clock when a contract begins remotely and the employee arrives weeks
+    later - are written down nowhere.
+
+    If is_verified were true for a sourced rule, every warning in the
+    product would fall silent the moment somebody pasted in a URL, and
+    the specialist review it exists to demand would look already done.
+    """
+
+    from core.rules.obligations import SOURCED, UNVERIFIED, VERIFIED
+
+    assert SOURCED not in (VERIFIED, UNVERIFIED)
+
+
+@pytest.mark.parametrize(
+    "status,verified,sourced",
+    [
+        ("verified", True, True),
+        ("sourced", False, True),
+        ("unverified", False, False),
+        ("superseded", False, False),
+    ],
+)
+def test_each_status_answers_both_questions_separately(status, verified, sourced):
+    """
+    "Has someone taken responsibility for this?" and "can we show where
+    it came from?" are different questions with different answers.
+    """
+
+    from core.rules.obligations import Obligation
+
+    obligation = _obligation_with_status(status)
+
+    assert obligation.is_verified is verified
+    assert obligation.is_sourced is sourced
+
+
+def test_a_sourced_rule_is_still_counted_as_needing_review():
+    """
+    unverified_count() drives the warning banner. A sourced rule has not
+    been reviewed by anyone, so it belongs in that count - otherwise
+    citing an article silently removes the warning that says a specialist
+    has not looked at this.
+    """
+
+    from core.rules.obligations import Obligation, unverified_count
+
+    assert unverified_count([_obligation_with_status("sourced")]) == 1
+    assert unverified_count([_obligation_with_status("verified")]) == 0
+
+
+def test_the_data_file_documents_every_status_the_engine_knows():
+    """
+    A status the engine accepts but the file does not explain is one
+    nobody can use correctly - and this file is what a specialist reads
+    before reviewing.
+    """
+
+    import json
+    from pathlib import Path
+
+    from core.rules.obligations import SOURCED, SUPERSEDED, UNVERIFIED, VERIFIED
+
+    path = Path(__file__).resolve().parent.parent / "data" / "obligations.json"
+
+    documented = json.loads(path.read_text(encoding="utf-8"))["verification_statuses"]
+
+    assert set(documented) == {VERIFIED, SOURCED, UNVERIFIED, SUPERSEDED}
+
+    for status, description in documented.items():
+        assert len(description) > 40, (
+            f"{status!r} is documented in one line; the difference between "
+            f"these states is the whole point and has to be readable"
+        )
+
+
+def test_the_shipped_rules_record_where_they_came_from():
+    """
+    A guard on the research, not on the law.
+
+    Every rule must say what it is: sourced rules carry a URL, the date
+    the source was read, and which body published it; unverified rules
+    explain what is still open. A status with nothing behind it is the
+    state this whole exercise existed to leave.
+    """
+
+    import json
+    from pathlib import Path
+
+    from core.rules.obligations import SOURCED, UNVERIFIED
+
+    path = Path(__file__).resolve().parent.parent / "data" / "obligations.json"
+
+    for rule in json.loads(path.read_text(encoding="utf-8"))["obligations"]:
+
+        verification = rule["verification"]
+        status = verification["status"]
+
+        assert verification.get("note"), (
+            f"{rule['id']}: no note. A status nobody explained cannot be "
+            f"acted on by the specialist who reviews it."
+        )
+
+        if status == SOURCED:
+            assert verification.get("source_url"), f"{rule['id']}: no source URL"
+            assert verification.get("sourced_on"), f"{rule['id']}: no date read"
+            assert verification.get("sourced_from"), f"{rule['id']}: no publisher"
+            assert rule.get("legal_basis"), (
+                f"{rule['id']} is sourced but names no provision - which is "
+                f"the one thing 'sourced' is supposed to mean"
+            )
+
+        if status == UNVERIFIED:
+            assert len(verification["note"]) > 80, (
+                f"{rule['id']} is unverified and the note is too short to "
+                f"tell a specialist what to resolve"
+            )

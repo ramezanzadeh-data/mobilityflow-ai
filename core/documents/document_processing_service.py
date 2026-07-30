@@ -18,6 +18,7 @@ from core.documents.ocr import extract_text_from_pdf, OCRDependencyError
 from core.documents.pipeline import classify_and_summarize_document
 from core.documents.validation import validate_document_against_case
 from core.documents.analyzer import analyze_documents
+from core.documents.matching import find_matching_document
 from core.rules.risk import calculate_risk_from_rules
 from core.workflow.states import get_next_state, normalize_legacy_state
 from core.storage.object_storage import upload_bytes, ensure_bucket_exists
@@ -36,21 +37,26 @@ from db.database import (
 
 
 def _find_or_create_document(case_id, document_name):
+    """
+    The checklist row this upload belongs to, creating it if it is new.
 
-    existing = next(
-        (d for d in get_documents(case_id) if d[2] == document_name),
-        None
-    )
+    Matching goes through core.documents.matching rather than ``==``.
+    The comparison here used to be exact string equality, and the two
+    vocabularies never agree: the checklist writes "Passport Copy" and
+    the classifier returns "Passport". Every passport upload therefore
+    created a second row and left the original at MISSING - the upload
+    succeeded, the checklist did not move, and the user corrected it by
+    hand.
+    """
+
+    existing = find_matching_document(get_documents(case_id), document_name)
 
     if existing:
         return existing[0]
 
     add_document(case_id, document_name)
 
-    created = next(
-        (d for d in get_documents(case_id) if d[2] == document_name),
-        None
-    )
+    created = find_matching_document(get_documents(case_id), document_name)
 
     return created[0] if created else None
 

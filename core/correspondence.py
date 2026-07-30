@@ -24,17 +24,21 @@ correctly formatted, and looks exactly like a correct one; nothing goes
 wrong until the commune replies asking for a resubmission, by which time
 the fourteen-day registration window has been eating into itself.
 
-What this module will not do
-----------------------------
-It will not infer the language from the commune, because the case has no
-commune field and this repository has no verified commune-to-language
-list. Building one from memory would be the same mistake as the invented
-Vaud risk score: a lookup table that looks researched and is not.
+Where the answer comes from
+---------------------------
+In order: the language stored on the case, then the commune's own
+administrative language, then the canton default.
 
-So the canton default is stated as an assumption, the UI shows it as one,
-and a user can override it per case. When a reviewed commune registry
-exists, ``resolve_correspondence_language`` is the one place that has to
-change.
+The commune step was added once migration 0007 gave cases a commune. It
+consults core.communes, which knows only the communes traced to a
+published source - three, against more than a hundred in Valais - and
+returns nothing for the rest. So it narrows the answer where there is
+evidence and never widens the claim: an untraced commune falls through to
+the canton default, which the screen still labels as an assumption.
+
+Filling that file in from memory would be the same mistake as the
+invented Vaud risk score this codebase already removed: a lookup table
+that looks researched and is not.
 """
 
 # The languages this product will generate correspondence in.
@@ -85,7 +89,7 @@ CANTON_IS_BILINGUAL = {"VALAIS", "BERN", "FRIBOURG"}
 LAST_RESORT_LANGUAGE = "en"
 
 
-def resolve_correspondence_language(case_language, canton):
+def resolve_correspondence_language(case_language, canton, commune=None):
     """
     The language to write this case's correspondence in.
 
@@ -94,6 +98,11 @@ def resolve_correspondence_language(case_language, canton):
             has not chosen. NULL is left meaning "not chosen" rather than
             being backfilled - see migration 0006.
         canton: The case's canton, used only for the default.
+        commune: The case's commune, if recorded. Preferred over the
+            canton default: in a bilingual canton the canton-level answer
+            is a coin toss and the commune's is a fact. Unknown communes
+            return nothing rather than a guess, so this narrows the
+            answer where it can and never widens the claim.
 
     Returns:
         A language code from CORRESPONDENCE_LANGUAGES.
@@ -106,6 +115,18 @@ def resolve_correspondence_language(case_language, canton):
 
     if case_language and case_language in CORRESPONDENCE_LANGUAGES:
         return case_language
+
+    # The commune knows better than the canton wherever it is known.
+    # core.communes returns None for anything not traced to a published
+    # source, so this can only ever narrow the answer.
+    if commune:
+
+        from core.communes import commune_language
+
+        language = commune_language(commune)
+
+        if language in CORRESPONDENCE_LANGUAGES:
+            return language
 
     if canton:
         default = CANTON_DEFAULT_LANGUAGE.get(canton.upper())

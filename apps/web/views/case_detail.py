@@ -26,7 +26,13 @@ from core.ai.engine import ask_ai
 
 from core.reporting.pdf import export_case_pdf
 
-from core.rules.risk import calculate_risk_from_rules
+from core.rules.risk import (
+    HEURISTIC as RISK_HEURISTIC,
+    PROCEDURAL as RISK_PROCEDURAL,
+    STATUTORY as RISK_STATUTORY,
+    calculate_risk_from_rules,
+    score_disclaimer as risk_score_disclaimer,
+)
 from core.rules.engine import build_workflow_from_rules
 
 from core.rules.obligations import (
@@ -73,7 +79,15 @@ from core.communication.email import (
 from i18n.translator import t, get_lang
 from auth.permissions import can_manage_email_templates, has_permission
 from core.ai.agent import run_agent
-from core.ai.operator import run_ai_operator
+from core.ai.operator import attach_operator_result, run_ai_operator
+from apps.web.state.case_workspace import (
+    clear_upload,
+    current_analysis,
+    current_upload,
+    remember_analysis,
+    remember_upload,
+)
+from core.documents.matching import suggest_document_for_classification
 
 from core.workflow.transitions import (
     apply_scenario,
@@ -90,6 +104,128 @@ from i18n.labels import (
     mode_label,
     workflow_state_label
 )
+
+
+def _render_risk_provenance(trace):
+    """
+    Say where each point of the risk score came from.
+
+    The number is rendered beside a red badge reading HIGH Risk 100. A
+    customer asking why is owed an answer, and the honest one is that
+    most of the arithmetic is operational judgement: no Swiss authority
+    publishes risk weights, so unlike the statutory deadlines these
+    cannot be traced to a provision.
+
+    Shown inline rather than behind an expander for the summary line -
+    a caveat one click away from the number it qualifies is a caveat
+    most people never see. The per-weight detail is collapsed, because
+    it is reference material rather than something to read every time.
+    """
+
+    contributions = trace.get("contributions") or []
+
+    if not contributions:
+        return
+
+    sourced = [
+        item for item in contributions
+        if item["basis"] in (RISK_STATUTORY, RISK_PROCEDURAL)
+    ]
+
+    st.caption(
+        t("risk_basis_summary").format(
+            sourced=len(sourced),
+            total=len(contributions),
+        )
+    )
+
+    with st.expander(t("risk_basis_expander")):
+
+        st.caption(risk_score_disclaimer())
+
+        for item in contributions:
+
+            label = {
+                RISK_STATUTORY: t("risk_basis_statutory"),
+                RISK_PROCEDURAL: t("risk_basis_procedural"),
+            }.get(item["basis"], t("risk_basis_heuristic"))
+
+            st.markdown(
+                f"**+{item['points']} · {escape(item['label'])}** — {label}"
+            )
+            st.caption(escape(item["reason"]))
+
+            if item.get("source_url"):
+                st.caption(item["source_url"])
+
+        if trace.get("was_capped"):
+            st.caption(
+                t("risk_capped_note").format(raw_total=trace["raw_total"])
+            )
+
+
+def _render_operator_attachment(case_id, op_result):
+    """
+    Ask which checklist item the processed document satisfies, and record it.
+
+    Shown after the run rather than before it, so the classification can
+    pre-select the answer - the user sees what the file appears to be and
+    confirms which obligation it discharges.
+
+    Deliberately a confirmation and not an automatic write. See the call
+    site: a wrong attachment makes a missing document look present, and
+    nothing downstream re-reads the file.
+    """
+
+    documents = get_documents(case_id)
+
+    if not documents:
+        st.info(t("no_documents_to_attach_note"))
+        return
+
+    classified_type = (op_result.get("classification") or {}).get("document_type")
+
+    suggestion = suggest_document_for_classification(documents, classified_type)
+
+    options = [document[0] for document in documents]
+
+    labels = {
+        document[0]: (
+            f"{document[2]}"
+            + ("" if document[3] == "MISSING" else f" · {document[3]}")
+        )
+        for document in documents
+    }
+
+    chosen = st.selectbox(
+        t("attach_to_document_label"),
+        options,
+        index=options.index(suggestion[0]) if suggestion else 0,
+        format_func=lambda doc_id: labels[doc_id],
+        key=f"operator_attach_{case_id}",
+    )
+
+    # Says where the pre-selection came from. A default the user believes
+    # they chose is the same defect as no confirmation at all.
+    if suggestion:
+        st.caption(
+            t("ai_operator_attach_suggestion").format(
+                document_type=classified_type or "?"
+            )
+        )
+
+    if st.button(
+        t("ai_operator_attach_button"),
+        key=f"operator_attach_btn_{case_id}",
+        type="primary",
+    ):
+        if attach_operator_result(op_result, chosen):
+            # Done with this file: it is recorded against a checklist
+            # item. Clearing here is deliberate, and it is the only place
+            # the workspace is emptied by a successful action.
+            clear_upload(case_id)
+            st.success(t("ai_operator_attached_note"))
+            st.rerun()
 
 
 def _reset_pipeline_state_if_case_changed(case_id):
@@ -240,6 +376,8 @@ def show_case_detail():
             badge_html(risk_text, level=risk_level, score=risk),
         ),
     ])
+
+    _render_risk_provenance(trace)
 
 
     section_header(t("workflow_stage_header"))
@@ -609,7 +747,24 @@ def show_case_detail():
                     key=f"operator_uploader_{case_id}"
                 )
 
+                # Held for the case, not for this run of the script.
+                #
+                # st.file_uploader returns the bytes only on the run where
+                # the file was chosen, and Streamlit re-executes the whole
+                # page on every interaction. Without this, pressing any
+                # other button discarded the upload and the user had to
+                # select the file and re-run OCR and the model again -
+                # which is exactly what happened.
                 if operator_file is not None:
+                    remember_upload(case_id, operator_file.name, operator_file.read())
+
+                held = current_upload(case_id)
+
+                if held:
+
+                    st.caption(
+                        t("operator_file_held").format(filename=held["filename"])
+                    )
 
                     if st.button(
                         t("run_ai_operator_button"),
@@ -619,15 +774,14 @@ def show_case_detail():
 
                         with st.spinner(t("ai_operator_running_label")):
 
-                            operator_result = run_ai_operator(
-                                case, operator_file.read()
+                            remember_analysis(
+                                case_id,
+                                run_ai_operator(case, held["bytes"]),
                             )
 
-                        st.session_state["ai_operator_result"] = operator_result
+                op_result = current_analysis(case_id)
 
-                if "ai_operator_result" in st.session_state:
-
-                    op_result = st.session_state["ai_operator_result"]
+                if op_result is not None:
 
                     if op_result.get("error"):
 
@@ -636,6 +790,26 @@ def show_case_detail():
                     else:
 
                         st.success(t("ai_operator_done_label"))
+
+                        # Which checklist item this file satisfies.
+                        #
+                        # Asked, not assumed. The operator used to be
+                        # called with no target at all, so the one write
+                        # that moves a document from MISSING to UPLOADED
+                        # never ran - the run reported success and the
+                        # checklist did not move.
+                        #
+                        # The classification pre-selects the answer, but
+                        # a person confirms it: marking the wrong item
+                        # received makes a missing document look present,
+                        # and the risk engine, the workflow gate and the
+                        # submission check all read that status without
+                        # re-checking the file.
+                        if not op_result.get("attached"):
+                            _render_operator_attachment(case_id, op_result)
+
+                        else:
+                            st.caption(t("ai_operator_attached_note"))
 
                         with st.expander(t("ai_operator_steps_label"), expanded=True):
 
@@ -733,7 +907,10 @@ def show_case_detail():
 
                                     st.success(t("stage_advanced_success"))
 
-                                    del st.session_state["ai_operator_result"]
+                                    # Advancing the stage has nothing to do
+                                    # with the upload. This used to delete
+                                    # the analysis, so confirming a stage
+                                    # meant re-uploading and re-running OCR.
                                     st.rerun()
 
             with manual_tab:

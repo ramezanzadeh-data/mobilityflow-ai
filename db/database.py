@@ -163,6 +163,7 @@ CASE_INDEX_ARRIVAL_DATE = 17
 CASE_INDEX_CONTRACT_START_DATE = 18
 CASE_INDEX_PERMIT_EXPIRY_DATE = 19
 CASE_INDEX_CORRESPONDENCE_LANGUAGE = 20
+CASE_INDEX_COMMUNE = 21
 
 
 def case_statutory_dates(case_row):
@@ -392,6 +393,7 @@ def init_db():
         _migrate_users_table(c)
         _migrate_case_statutory_dates(c)
         _migrate_case_correspondence_language(c)
+        _migrate_case_commune(c)
         # Must run before _enable_row_level_security(): that function
         # applies the tenant_isolation policy to every table in
         # _RLS_TABLES, and this one is in that list.
@@ -500,6 +502,19 @@ def _migrate_case_correspondence_language(c):
     """
 
     c.execute(_read_migration("0006_case_correspondence_language.up.sql"))
+
+
+def _migrate_case_commune(c):
+    """
+    Add the commune a case registers in.
+
+    Found necessary by tracing the obligation rules to their sources:
+    Valais communes publish different renewal windows and administer in
+    different languages, so neither can be computed from the canton
+    alone. See the migration file.
+    """
+
+    c.execute(_read_migration("0007_case_commune.up.sql"))
 
 
 def _migrate_webhook_outbox(c):
@@ -1527,7 +1542,10 @@ def load_case(case_id):
             permit_expiry_date,
 
             -- Added by migration 0006.
-            correspondence_language
+            correspondence_language,
+
+            -- Added by migration 0007.
+            commune
 
         FROM cases
         WHERE id=%s

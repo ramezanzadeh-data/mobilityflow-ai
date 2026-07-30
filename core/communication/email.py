@@ -16,16 +16,62 @@ whatever the user had selected. Choosing French translated the buttons
 around an English letter to a French-speaking commune.
 """
 
+import logging
+
 from core.ai.engine import ask_ai
 from core.ai.prompts import (
     build_email_prompt,
     build_checklist_prompt,
     build_letter_prompt,
 )
+from core.communication.language_check import looks_like_the_wrong_language
 from core.correspondence import resolve_correspondence_language
 from db.database import (
     CASE_INDEX_CORRESPONDENCE_LANGUAGE,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+def _checked(text, language, what):
+    """
+    Return the draft, having noted whether it came back in the right
+    language.
+
+    The instruction in the prompt is a request, and a small local model
+    sometimes declines: a prompt dense with "Switzerland", "canton
+    VALAIS" and "Contrôle des habitants" pulls it towards German however
+    plainly English was asked for. That happened - the interface was
+    English and Generate Email returned German.
+
+    The draft is returned either way. It is not silently retranslated:
+    text a user is about to send to an authority should not be quietly
+    rewritten by the component that just got it wrong. The page shows the
+    warning and the user decides.
+    """
+
+    if looks_like_the_wrong_language(text, language):
+        logger.warning(
+            "Generated %s does not appear to be in %s, which was requested. "
+            "The local model has ignored the language instruction.",
+            what,
+            language,
+        )
+
+    return text
+
+
+def draft_is_in_the_wrong_language(text, case):
+    """
+    Whether a draft should be shown to the user with a warning.
+
+    Exposed for the page: the generators return plain strings and several
+    callers store them, so widening the return type would touch every one
+    of them for a flag most do not use.
+    """
+
+    return looks_like_the_wrong_language(text, _case_language(case))
 
 
 def _case_language(case):
@@ -79,22 +125,26 @@ def generate_email(case, step, tone="formal"):
     employee_name = case[1]
     canton = case[3]
 
+    language = _case_language(case)
+
     prompt = build_email_prompt(
-        employee_name, canton, step, tone, language=_case_language(case)
+        employee_name, canton, step, tone, language=language
     )
 
-    return ask_ai(prompt)
+    return _checked(ask_ai(prompt), language, "email")
 
 
 def generate_checklist(case, workflow):
 
     employee_name = case[1]
 
+    language = _case_language(case)
+
     prompt = build_checklist_prompt(
-        employee_name, workflow, language=_case_language(case)
+        employee_name, workflow, language=language
     )
 
-    return ask_ai(prompt)
+    return _checked(ask_ai(prompt), language, "checklist")
 
 
 def generate_letter(case, risk, trace, workflow):
@@ -105,9 +155,11 @@ def generate_letter(case, risk, trace, workflow):
     permit = case[4]
     employer = case[6]
 
+    language = _case_language(case)
+
     prompt = build_letter_prompt(
         employee_name, nationality, canton, permit, employer, risk, trace,
-        workflow, language=_case_language(case),
+        workflow, language=language,
     )
 
-    return ask_ai(prompt)
+    return _checked(ask_ai(prompt), language, "letter")
