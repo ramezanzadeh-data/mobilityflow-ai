@@ -68,10 +68,46 @@ services:
       timeout: 5s
       retries: 10
 
+  # One origin in front of Streamlit and the API - see deploy/nginx.conf
+  # for why. The HttpOnly session cookie that replaced the token in the
+  # URL is first-party only because of this.
+  #
+  # It is also the only way in now. streamlit and api publish no host
+  # ports of their own: reaching Streamlit directly on 8501 would mean
+  # reaching it on an origin where /api/ does not exist, so no cookie
+  # could be set - and while the URL fallback existed, that is exactly
+  # where a session token would end up back in the address bar and in the
+  # footer of every printed page. Removing the ports removes the route to
+  # it, rather than trusting everyone to use the right URL.
+  #
+  # They were kept, deliberately, for one release: adding the proxy and
+  # removing the direct ports in the same change would have meant a proxy
+  # fault and "the application is gone" arriving together with nothing to
+  # tell them apart.
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      streamlit:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
   streamlit:
     build: .
-    ports:
-      - "8501:8501"
+    # No published port. Reachable only through the proxy, on the one
+    # origin where a session cookie can be set - see the proxy service
+    # above. The healthcheck below still uses localhost:8501 because that
+    # runs inside this container, where the port is listening regardless
+    # of whether it is published to the host.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
@@ -112,6 +148,20 @@ services:
       # space, which YAML would otherwise parse as a mapping instead of a
       # plain string list item (services.<svc>.environment.[14]:
       # unexpected type map[string]interface {}).
+      # --- Browser session (the HttpOnly cookie) ---
+      #
+      # Listed here with defaults rather than left to .env alone. The
+      # image does not ship .env (see .dockerignore), so inside a
+      # container bootstrap.load_environment() finds no file and these
+      # would silently fall back to their in-code defaults - a switch set
+      # in .env that appears to do nothing. Compose does read ./.env for
+      # ${...} substitution, so setting them there works through this.
+      #
+      # See auth/browser_session.py and .env.example for what each does.
+      - MOBILITYFLOW_BROWSER_SESSION_HOURS=${MOBILITYFLOW_BROWSER_SESSION_HOURS:-12}
+      - MOBILITYFLOW_SESSION_IDLE_MINUTES=${MOBILITYFLOW_SESSION_IDLE_MINUTES:-30}
+      - MOBILITYFLOW_SESSION_COOKIE_SECURE=${MOBILITYFLOW_SESSION_COOKIE_SECURE:-auto}
+      - MOBILITYFLOW_API_BASE_PATH=${MOBILITYFLOW_API_BASE_PATH:-/api}
       - 'JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in your .env file. Generate one with: python -c "import secrets; print(secrets.token_hex(32))"}'
       - 'ENCRYPTION_KEY=${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in your .env file. Generate one with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"}'
     depends_on:
@@ -129,10 +179,28 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    # --root-path is what nginx strips, told to the application.
+    #
+    # It changes no routing - nginx has already removed /api by the time
+    # a request arrives here, and uvicorn matches on the path it is
+    # given. What it fixes is the URLs the app *generates*. Swagger UI
+    # asks for the schema at an absolute path, so without this /docs
+    # would load through the proxy and then request /openapi.json, which
+    # nginx routes to Streamlit. The page renders and says "Failed to
+    # load API definition" - which looks like the API being down.
+    #
+    # It also makes "Try it out" send requests to /api/api/v1/... rather
+    # than /api/v1/..., which is where the endpoints actually are from a
+    # browser's point of view.
     command: >
       uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
-    ports:
-      - "8000:8000"
+      --root-path /api
+    # No published port either. Integrators reach the REST API through
+    # the proxy at /api/api/v1/..., which is the same path the browser
+    # uses and the only one with TLS in front of it in production. A
+    # second, unproxied way in is a second thing to secure.
+    #
+    # /docs is reachable at http://localhost/api/docs.
     extra_hosts: *host_gateway
     environment: *app_env
     depends_on:

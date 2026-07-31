@@ -1,0 +1,242 @@
+{
+  "_meta": {
+    "schema_version": "1.0",
+    "purpose": "Operational definition of each workflow task: what it is for, who does it, which tracked documents it needs, and what blocks it. Held as data so a task briefing can be computed rather than generated.",
+    "why_this_exists": "A task was a bare string. build_workflow() returned [\"Initial case review\", \"Collect identity documents\", ...] and nothing else existed - no purpose, no required documents, no owner. The AI button therefore sent the model one line of text with no case attached, and the model produced a general article about Swiss immigration, because a task title is the only thing it had. The article was the symptom; the missing data model was the cause.",
+    "what_is_and_is_not_claimed": {
+      "purpose": "Operational description of the step. Not a legal statement.",
+      "owner": "Who performs the step in a relocation mandate. A working convention, not a legal allocation of responsibility.",
+      "required_documents": "Canonical document names as used by core/documents/analyzer.py. Only names that appear there can be checked, so only those are listed - a requirement the product cannot verify is worse than an absent one, because it looks verified.",
+      "duration": "Deliberately absent. No Swiss authority publishes per-step durations, and inventing one would let a consultant promise a date on the strength of a number this product made up. Target durations are a per-customer SLA and belong in tenant settings, not here."
+    },
+    "owners": [
+      "EMPLOYEE",
+      "HR_MANAGER",
+      "CASE_MANAGER",
+      "IMMIGRATION_SPECIALIST",
+      "RELOCATION_CONSULTANT",
+      "CANTONAL_AUTHORITY",
+      "COMMUNE",
+      "SYSTEM"
+    ],
+    "owner_note": "A fixed set rather than free text, so tasks can later be routed to a real user by role. CANTONAL_AUTHORITY and COMMUNE mean the case is waiting on an authority: nobody on the customer's side can advance it, which is a materially different state from 'not started' and is shown as such.",
+    "tracked_documents": [
+      "Passport Copy",
+      "Employment Contract",
+      "CV",
+      "Entry Visa Documentation",
+      "Commune Registration Form"
+    ]
+  },
+
+  "tasks": {
+    "initial_case_review": {
+      "title": "Initial case review",
+      "purpose": "Confirm the case has the facts needed to enter the workflow: who the employee is, which permit path applies, and which employer is sponsoring.",
+      "owner": "CASE_MANAGER",
+      "required_documents": ["Passport Copy", "Employment Contract"],
+      "requires_case_fields": ["employee_name", "nationality", "canton", "permit", "employer"],
+      "blocked_by_authority": false
+    },
+
+    "collect_identity_documents": {
+      "title": "Collect identity documents",
+      "purpose": "Obtain the identity evidence every downstream authority step depends on. Nothing can be submitted without it.",
+      "owner": "EMPLOYEE",
+      "required_documents": ["Passport Copy"],
+      "requires_case_fields": [],
+      "blocked_by_authority": false
+    },
+
+    "verify_employment_contract": {
+      "title": "Verify employment contract",
+      "purpose": "Check that a signed contract exists and that its start date is consistent with the permit timeline, since work may not begin before an authorisation exists (Art. 11 AIG).",
+      "owner": "HR_MANAGER",
+      "required_documents": ["Employment Contract"],
+      "requires_case_fields": ["contract_start_date", "employer"],
+      "blocked_by_authority": false
+    },
+
+    "validate_visa_eligibility": {
+      "title": "Validate visa eligibility",
+      "purpose": "Establish which entry route applies to this third-country national before an application is prepared.",
+      "owner": "IMMIGRATION_SPECIALIST",
+      "required_documents": ["Passport Copy", "Entry Visa Documentation"],
+      "requires_case_fields": ["nationality"],
+      "blocked_by_authority": false
+    },
+
+    "check_immigration_quota": {
+      "title": "Check immigration quota",
+      "purpose": "Confirm quota availability for this permit type before committing to a start date. Non-EU/EFTA cases are quota-subject and a start date agreed without this is a date that can be missed.",
+      "owner": "IMMIGRATION_SPECIALIST",
+      "required_documents": [],
+      "requires_case_fields": ["permit", "contract_start_date"],
+      "blocked_by_authority": false
+    },
+
+    "prepare_entry_authorization": {
+      "title": "Prepare entry authorization",
+      "purpose": "Assemble the entry authorisation file for submission to the cantonal authority.",
+      "owner": "IMMIGRATION_SPECIALIST",
+      "required_documents": ["Passport Copy", "Employment Contract", "Entry Visa Documentation"],
+      "requires_case_fields": ["arrival_date"],
+      "blocked_by_authority": false
+    },
+
+    "process_eu_registration": {
+      "title": "Process EU registration",
+      "purpose": "Handle the registration route that applies to EU/EFTA nationals, which is a declaration rather than a quota-subject authorisation.",
+      "owner": "RELOCATION_CONSULTANT",
+      "required_documents": ["Passport Copy", "Employment Contract"],
+      "requires_case_fields": ["arrival_date"],
+      "blocked_by_authority": false
+    },
+
+    "prepare_permit_application": {
+      "title": "Prepare permit application",
+      "purpose": "Compile the residence permit application for a case that has no valid permit yet.",
+      "owner": "CASE_MANAGER",
+      "required_documents": ["Passport Copy", "Employment Contract", "CV"],
+      "requires_case_fields": ["permit", "employer"],
+      "blocked_by_authority": false
+    },
+
+    "collect_biometric_data": {
+      "title": "Collect biometric data",
+      "purpose": "Have the employee attend biometric capture, which the authority requires before a permit card is produced.",
+      "owner": "EMPLOYEE",
+      "required_documents": ["Passport Copy"],
+      "requires_case_fields": [],
+      "blocked_by_authority": false
+    },
+
+    "schedule_cantonal_appointment": {
+      "title": "Schedule cantonal appointment",
+      "purpose": "Book the cantonal appointment and align it with the contract start date.",
+      "owner": "RELOCATION_CONSULTANT",
+      "required_documents": [],
+      "requires_case_fields": ["arrival_date"],
+      "blocked_by_authority": false
+    },
+
+    "validate_existing_permit": {
+      "title": "Validate existing permit",
+      "purpose": "Confirm the permit already held is valid, covers this employer, and does not expire inside the mandate.",
+      "owner": "IMMIGRATION_SPECIALIST",
+      "required_documents": ["Passport Copy"],
+      "requires_case_fields": ["permit", "permit_expiry_date"],
+      "blocked_by_authority": false
+    },
+
+    "employer_eligibility_verification": {
+      "title": "Employer eligibility verification",
+      "purpose": "Verify the employer may sponsor this permit type.",
+      "owner": "HR_MANAGER",
+      "required_documents": ["Employment Contract"],
+      "requires_case_fields": ["employer"],
+      "blocked_by_authority": false
+    },
+
+    "validate_permanent_residence": {
+      "title": "Validate permanent residence",
+      "purpose": "Confirm the settlement permit is current. A C permit needs the least intervention of any status, so this step is a check rather than a process.",
+      "owner": "IMMIGRATION_SPECIALIST",
+      "required_documents": ["Passport Copy"],
+      "requires_case_fields": ["permit_expiry_date"],
+      "blocked_by_authority": false
+    },
+
+    "cross_border_worker_verification": {
+      "title": "Cross-border worker verification",
+      "purpose": "Establish the cross-border arrangement: where the employee resides, where they work, and how often they return.",
+      "owner": "IMMIGRATION_SPECIALIST",
+      "required_documents": ["Passport Copy", "Employment Contract"],
+      "requires_case_fields": ["permit", "employer"],
+      "blocked_by_authority": false
+    },
+
+    "tax_registration": {
+      "title": "Tax registration",
+      "purpose": "Register the employee for withholding tax, which for a cross-border worker involves a second jurisdiction.",
+      "owner": "HR_MANAGER",
+      "required_documents": ["Employment Contract"],
+      "requires_case_fields": ["employer", "commune"],
+      "blocked_by_authority": false
+    },
+
+    "social_insurance_registration": {
+      "title": "Social insurance registration",
+      "purpose": "Register the employee for social insurance under the arrangement that applies to their status.",
+      "owner": "HR_MANAGER",
+      "required_documents": ["Employment Contract"],
+      "requires_case_fields": ["employer"],
+      "blocked_by_authority": false
+    },
+
+    "commune_registration_valais": {
+      "title": "Commune registration (Valais)",
+      "purpose": "Register the employee at their commune of residence. Registration is an obligation under Art. 12 AIG and the deadline is counted from arrival, so this step is time-critical rather than administrative.",
+      "owner": "EMPLOYEE",
+      "supported_by": "RELOCATION_CONSULTANT",
+      "required_documents": ["Passport Copy", "Commune Registration Form"],
+      "requires_case_fields": ["arrival_date", "commune"],
+      "blocked_by_authority": false,
+      "note": "The deadline differs by commune - see data/canton_valais_communes.json. It cannot be derived from the canton, so a case with no commune recorded has no computable deadline and says so."
+    },
+
+    "cantonal_approval": {
+      "title": "Cantonal approval",
+      "purpose": "The cantonal authority (SPM) reviews the file. Nothing on the customer's side advances this step.",
+      "owner": "CANTONAL_AUTHORITY",
+      "required_documents": [],
+      "requires_case_fields": [],
+      "blocked_by_authority": true
+    },
+
+    "housing_registration": {
+      "title": "Housing registration",
+      "purpose": "Record the residential address, which commune registration and correspondence both depend on.",
+      "owner": "RELOCATION_CONSULTANT",
+      "required_documents": [],
+      "requires_case_fields": ["commune"],
+      "blocked_by_authority": false
+    },
+
+    "family_relocation_support": {
+      "title": "Family relocation support",
+      "purpose": "Coordinate accompanying family members. Whether any exist is not recorded on the case, so this step is listed without a document requirement rather than assuming a family.",
+      "owner": "RELOCATION_CONSULTANT",
+      "required_documents": [],
+      "requires_case_fields": [],
+      "blocked_by_authority": false
+    },
+
+    "employer_sponsorship_verification": {
+      "title": "Employer sponsorship verification",
+      "purpose": "Confirm the sponsoring employer's undertaking for a recruitment mandate, where the start date is usually fixed before the authorisation exists.",
+      "owner": "HR_MANAGER",
+      "required_documents": ["Employment Contract"],
+      "requires_case_fields": ["employer", "contract_start_date"],
+      "blocked_by_authority": false
+    },
+
+    "sme_compliance_review": {
+      "title": "SME compliance review",
+      "purpose": "Walk a smaller employer with no in-house mobility function through their obligations for this case.",
+      "owner": "CASE_MANAGER",
+      "required_documents": ["Employment Contract"],
+      "requires_case_fields": ["employer"],
+      "blocked_by_authority": false
+    },
+
+    "close_relocation_case": {
+      "title": "Close relocation case",
+      "purpose": "Confirm every obligation is discharged and the file is complete before the mandate is closed.",
+      "owner": "CASE_MANAGER",
+      "required_documents": ["Passport Copy", "Employment Contract"],
+      "requires_case_fields": [],
+      "blocked_by_authority": false
+    }
+  }
+}

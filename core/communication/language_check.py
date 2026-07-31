@@ -116,6 +116,63 @@ def detect_language(text):
     return best
 
 
+# Closing formulas, which a model reaches for even when the rest of the
+# letter is in the requested language. "Mit freundlichen Grüßen" at the
+# foot of an otherwise English email is not caught by counting function
+# words - the English wins the count easily - but it is exactly what a
+# recipient notices first.
+#
+# Note the ß in the German entries. Swiss standard German does not use
+# it, so its presence is doubly wrong here: wrong language, and the
+# German-from-Germany spelling of it. Both spellings are listed because
+# the point is to detect the phrase, not to grade it.
+_CLOSING_FORMULAS = {
+    "de": [
+        "mit freundlichen grüßen",
+        "mit freundlichen grüssen",
+        "sehr geehrte damen und herren",
+        "hochachtungsvoll",
+        "beste grüße",
+        "beste grüsse",
+    ],
+    "fr": [
+        "veuillez agréer",
+        "cordialement",
+        "meilleures salutations",
+        "salutations distinguées",
+        "madame, monsieur",
+    ],
+    "it": ["distinti saluti", "cordiali saluti"],
+}
+
+
+def foreign_phrases(text, expected):
+    """
+    Fixed phrases from a language other than the requested one.
+
+    Separate from detect_language() because the failure is different in
+    kind: the letter is in the right language and one formula is not.
+    Counting function words cannot see it - the correct language wins the
+    count - yet a German sign-off on an English letter is the first thing
+    a reader notices.
+
+    Returns a list of (language, phrase) for whatever was found.
+    """
+
+    if not text or not expected:
+        return []
+
+    lowered = text.lower()
+
+    return [
+        (language, phrase)
+        for language, phrases in _CLOSING_FORMULAS.items()
+        if language != expected
+        for phrase in phrases
+        if phrase in lowered
+    ]
+
+
 def looks_like_the_wrong_language(text, expected):
     """
     Whether generated text is confidently in a language we did not ask for.
@@ -127,6 +184,12 @@ def looks_like_the_wrong_language(text, expected):
 
     if not expected:
         return False
+
+    # A foreign closing formula is conclusive on its own. "Mit
+    # freundlichen Grüßen" is not a word that happens to appear in
+    # English text; it is a German sign-off, and one is enough.
+    if foreign_phrases(text, expected):
+        return True
 
     detected = detect_language(text)
 

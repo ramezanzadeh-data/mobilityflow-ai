@@ -87,6 +87,31 @@ _THEME_CSS = """
     margin: var(--mf-space-2) 0 var(--mf-space-5) 0;
 }
 
+/* Narrower cells, for a short row of summary facts that should stay on
+   one line. 120px is the floor at which a value like "Non-EU / EFTA"
+   still reads - below that the wrapping this component was built to fix
+   starts coming back, so it is a floor rather than a preference.
+
+   Only worth using where the field count is small. Six of these fit a
+   normal window; eight do not, which is why the case overview dropped
+   two fields rather than shrinking further. */
+.mf-field-grid--compact {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: var(--mf-space-2);
+    /* Inside a bordered container now, which supplies the separation the
+       old bottom margin was standing in for. 24px of it below the fields
+       pushed the provenance lines away from the score they qualify. */
+    margin: var(--mf-space-1) 0 var(--mf-space-2) 0;
+}
+
+.mf-field-grid--compact .mf-field {
+    padding: var(--mf-space-2) var(--mf-space-3);
+}
+
+.mf-field-grid--compact .mf-field__value {
+    font-size: 14px;
+}
+
 .mf-field {
     display: flex;
     flex-direction: column;
@@ -172,18 +197,77 @@ _THEME_CSS = """
     max-width: 70ch;   /* long lines are measurably harder to read */
 }
 
+/* =====================================================================
+   Bordered containers
+
+   st.container(border=True) draws a 1px hairline in Streamlit's own
+   neutral, which at this density disappeared: Case Overview and Workflow
+   Stage looked like loose content rather than two defined panels. A
+   heavier, darker edge is what makes a box read as a box.
+
+   Scoped with :has(.mf-panel-marker) rather than applied to the wrapper
+   directly. Streamlit emits stVerticalBlockBorderWrapper for every
+   container, not only those created with border=True, so the unscoped
+   rule would have drawn a border around things that are not panels.
+   ===================================================================== */
+section[data-testid="stMain"]
+[data-testid="stVerticalBlockBorderWrapper"]:has(.mf-panel-marker) {
+    border: 2px solid var(--mf-ink-muted);
+    border-radius: var(--mf-radius);
+    background: var(--mf-surface);
+}
+
+/* The marker itself takes no space. */
+.mf-panel-marker {
+    display: none;
+}
+
 /* Section headings within a page. */
 .mf-section {
     margin: var(--mf-space-6) 0 var(--mf-space-3) 0;
 }
 
+/* A section that follows the page identity directly. The standard space
+   above separates one section from the previous one; here there is no
+   previous section, and the full gap left the heading looking detached
+   from the page it belongs to. */
+.mf-section--tight {
+    margin-top: var(--mf-space-3);
+}
+
 .mf-section__title {
     margin: 0;
     font-size: var(--mf-text-lg);
-    font-weight: 600;
+    /* 700, not 600. These headings now sit inside bordered containers,
+       and at 600 they read as another line of content in the box rather
+       than as the thing naming it. */
+    font-weight: 700;
     letter-spacing: -0.005em;
     line-height: 1.3;
     color: var(--mf-ink);
+}
+
+/* .mf-section--split and .mf-section__identity* were here, for a section
+   heading with the case subject beside it. Both are gone with the two
+   layout components that emitted them: the employee's name is the page
+   title now, so nothing renders an identity on a heading line.
+
+   Removed rather than left in place. A class defined in the stylesheet
+   and emitted by nothing is the mirror of the defect recorded at the top
+   of components/workflow.py - a class emitted by the markup and defined
+   in no stylesheet, which styled nothing and was not noticed for a
+   release. Both cost the same to keep and mislead the next reader the
+   same way. */
+
+/* A short status beside a heading - "Stage 1/7", next to the section it
+   counts. Quiet on purpose: it belongs to the heading rather than
+   competing with it. */
+.mf-section__meta {
+    font-size: var(--mf-text-sm);
+    font-weight: 500;
+    color: var(--mf-ink-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .mf-section__description {
@@ -663,6 +747,42 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label:focus-within {
     margin: var(--mf-space-2) 0 var(--mf-space-5) 0;
 }
 
+/* Heading, track and counter on one row.
+
+   The track takes the space the other two do not, so the stages spread
+   across whatever is left rather than being sized independently of the
+   room available. Aligned to the top, not the centre: the dots sit at a
+   fixed height inside the track and the labels hang below them, so
+   centring would push the heading down to the middle of a two-line
+   block and leave it floating beside the labels rather than the dots. */
+.mf-stage-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--mf-space-5);
+    margin: var(--mf-space-2) 0 var(--mf-space-3) 0;
+    /* Wraps rather than clips.
+       On one row when there is room, which is what it is for. When there
+       is not, the track drops to its own full-width line instead of
+       scrolling out of view - a printout showed Decision and Completed
+       simply absent, and a stage track that hides the last two stages is
+       worse than a second line. */
+    flex-wrap: wrap;
+}
+
+.mf-stage-row .mf-stepper__track {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Nudged down to sit level with the dots rather than the top of the
+   track box. 4px of step padding plus half a 20px marker. */
+.mf-stage-row__title,
+.mf-stage-row__meta {
+    flex: none;
+    padding-top: var(--mf-space-1);
+    white-space: nowrap;
+}
+
 .mf-stepper__track {
     display: flex;
     align-items: flex-start;
@@ -670,25 +790,49 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label:focus-within {
     margin: 0;
     padding: 0;
     list-style: none;
-    /* Seven stages plus long labels will not fit every viewport. Scrolling
-       the track keeps the steps readable; shrinking them would recreate
-       the character-by-character wrapping this project already fixed. */
-    overflow-x: auto;
+    /* No horizontal scroll. It kept the steps readable in a browser and
+       silently removed them everywhere else: printed to PDF, the track
+       ended at "Author..." with two of seven stages gone and nothing to
+       indicate they existed. The row wraps instead. */
+    min-width: 520px;
 }
 
+/* A column: marker, then label, stacked by the layout rather than by a
+   padding that has to be kept larger than the marker by hand.
+
+   It was the hand-kept version before, and it was wrong on screen: the
+   marker sat outside the flow at `position: absolute`, and the label was
+   pushed clear of it by `padding-top: var(--mf-space-5)` - 24px. The
+   marker is 16px plus a 2px border on each side, so it ends at 22px, and
+   the current step's focus ring extends 4px past that to 26px. The gap
+   was therefore negative, and every label rendered underneath its own
+   marker: "Draft" appeared as "t", "Submitted" as "Sub<dot>itted".
+
+   Two numbers that had to be kept in a relationship no rule expressed.
+   Now the marker occupies its own space, so the label cannot overlap it
+   whatever either one's size becomes. */
 .mf-step {
     position: relative;
     flex: 1 1 0;
-    min-width: 96px;
-    padding-top: var(--mf-space-5);
+    min-width: 74px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    /* Clears the 4px focus ring on the current step with room to spare. */
+    gap: var(--mf-space-3);
+    padding: var(--mf-space-1) 0 0 0;
     text-align: center;
 }
 
-/* The connector line, drawn behind the markers. */
+/* The connector line, drawn behind the markers.
+
+   Absolutely positioned, so it is not a flex item and does not take a
+   slot in the column above. `top` is the marker's centre: 4px of padding
+   plus half of the marker's 20px outer height. */
 .mf-step::before {
     content: "";
     position: absolute;
-    top: 9px;
+    top: 14px;
     left: -50%;
     width: 100%;
     height: 2px;
@@ -704,16 +848,20 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label:focus-within {
     background: var(--mf-info);
 }
 
+/* In normal flow now, as a flex item, so it reserves the space it
+   occupies. Left at content-box sizing on purpose: the tick mark below
+   is positioned against a 16px interior, and switching to border-box
+   would silently move it. */
 .mf-step__marker {
-    position: absolute;
-    top: 2px;
-    left: 50%;
-    transform: translateX(-50%);
+    position: relative;
+    flex: none;
     width: 16px;
     height: 16px;
     border-radius: 50%;
     border: 2px solid var(--mf-line);
     background: var(--mf-surface);
+    /* Above the connector line, which is drawn across the whole step. */
+    z-index: 1;
 }
 
 .mf-step--done .mf-step__marker {

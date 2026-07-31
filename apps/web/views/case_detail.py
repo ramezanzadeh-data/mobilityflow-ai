@@ -23,6 +23,14 @@ from db.database import (
 )
 
 from core.ai.engine import ask_ai
+from core.tasks.briefing import (
+    BLOCKED,
+    COMPLETE,
+    PENDING,
+    WAITING_ON_AUTHORITY,
+    build_task_briefing,
+)
+from db.database import case_fields
 
 from core.reporting.pdf import export_case_pdf
 
@@ -54,8 +62,12 @@ from core.documents.document_processing_service import process_uploaded_document
 from apps.web.utils.ui import StepNumbering
 from apps.web.components.badges import badge_html
 from apps.web.components.cards import field_grid, obligation_row
-from apps.web.components.workflow import workflow_stepper
-from apps.web.components.layout import page_header, section_header
+from apps.web.components.workflow import workflow_stage_row
+from apps.web.components.layout import (
+    page_header,
+    panel_marker,
+    section_header,
+)
 
 
 from core.workflow.states import (
@@ -88,6 +100,7 @@ from apps.web.state.case_workspace import (
     remember_upload,
 )
 from core.documents.matching import suggest_document_for_classification
+from core.storage.object_storage import download_bytes
 
 from core.workflow.transitions import (
     apply_scenario,
@@ -104,6 +117,75 @@ from i18n.labels import (
     mode_label,
     workflow_state_label
 )
+
+
+# Session keys holding work for one case rather than for the app. They
+# are not keyed by case id, so they have to be cleared when the case
+# changes or the previous case's results render against the new one.
+_PER_CASE_SESSION_KEYS = ("doc_report",)
+
+
+def _forget_previous_case_state(case_id):
+    """
+    Drop scratch state belonging to a case the user has left.
+
+    This used to happen in the "Back to Dashboard" button, which meant it
+    happened only if the user left that way. The sidebar has always been
+    able to navigate away too, and now the URL can open a different case
+    directly - so the cleanup belonged to the case changing, not to one
+    particular route out of the page.
+
+    A stale document report is not a cosmetic problem: it is one case's
+    analysis displayed under another case's name.
+    """
+
+    if st.session_state.get("_case_state_for") == case_id:
+        return
+
+    for key in _PER_CASE_SESSION_KEYS:
+        st.session_state.pop(key, None)
+
+    st.session_state["_case_state_for"] = case_id
+
+
+def _render_stored_file(document):
+    """
+    Offer the stored original for one document row.
+
+    Silent when the document has no file: a row that was never uploaded
+    should not sprout a broken control. But a row that was analysed with
+    the original discarded does say so - see
+    core.ai.operator._store_uploaded_file, which leaves file_path empty
+    rather than fabricating one.
+    """
+
+    DOCUMENT_INDEX_STATUS = 3
+    DOCUMENT_INDEX_FILE_PATH = 4
+
+    if len(document) <= DOCUMENT_INDEX_FILE_PATH:
+        return
+
+    file_path = document[DOCUMENT_INDEX_FILE_PATH]
+    status = document[DOCUMENT_INDEX_STATUS]
+
+    if not file_path:
+        if status != "MISSING":
+            st.caption(t("document_not_retained"))
+        return
+
+    try:
+        data = download_bytes(file_path)
+
+    except Exception:  # noqa: BLE001 - a missing object is not a page error
+        st.caption(t("document_file_unavailable"))
+        return
+
+    st.download_button(
+        t("document_download_button"),
+        data=data,
+        file_name=file_path.rsplit("/", 1)[-1],
+        key=f"download_doc_{document[0]}",
+    )
 
 
 def _render_risk_provenance(trace):
@@ -132,14 +214,46 @@ def _render_risk_provenance(trace):
         if item["basis"] in (RISK_STATUTORY, RISK_PROCEDURAL)
     ]
 
-    st.caption(
-        t("risk_basis_summary").format(
+    # Three strings rather than one with numbers substituted in. The
+    # single string read "{sourced} of {total} factors reflect ... The
+    # rest are operational judgement", which was ungrammatical at
+    # sourced=1 ("1 of 4 factors reflect") and, more seriously, false at
+    # sourced=total: it asserted a remainder that did not exist.
+    if not sourced:
+        summary = t("risk_basis_summary_none").format(total=len(contributions))
+
+    elif len(sourced) == len(contributions):
+        summary = t("risk_basis_summary_all").format(total=len(contributions))
+
+    else:
+        summary = t("risk_basis_summary_mixed").format(
             sourced=len(sourced),
             total=len(contributions),
         )
-    )
 
-    with st.expander(t("risk_basis_expander")):
+    # Both facts on one line, with the expander beside them.
+    #
+    # They are two separate statements and both belong here rather than
+    # inside the expander: one says how much of the score is sourced, the
+    # other says the number is a floor rather than a value. A caveat one
+    # click from the figure it qualifies is a caveat most people never
+    # read. But being separate facts never required being separate rows -
+    # three stacked lines made a short qualification look like a warning
+    # notice.
+    if trace.get("was_capped"):
+        summary = summary + " " + t("risk_capped_note").format(
+            raw_total=trace["raw_total"]
+        )
+
+    provenance_column, expander_column = st.columns([3, 2])
+
+    with provenance_column:
+        st.caption(summary)
+
+    with expander_column:
+        provenance_detail = st.expander(t("risk_basis_expander"))
+
+    with provenance_detail:
 
         st.caption(risk_score_disclaimer())
 
@@ -158,10 +272,113 @@ def _render_risk_provenance(trace):
             if item.get("source_url"):
                 st.caption(item["source_url"])
 
-        if trace.get("was_capped"):
-            st.caption(
-                t("risk_capped_note").format(raw_total=trace["raw_total"])
+        # The cap is stated above, next to the score. Not repeated here:
+        # saying it twice on one screen reads as two different facts.
+
+
+_OWNER_LABELS = {
+    "EMPLOYEE": "Employee",
+    "HR_MANAGER": "HR Manager",
+    "CASE_MANAGER": "Case Manager",
+    "IMMIGRATION_SPECIALIST": "Immigration Specialist",
+    "RELOCATION_CONSULTANT": "Relocation Consultant",
+    "CANTONAL_AUTHORITY": "Cantonal Authority",
+    "COMMUNE": "Commune",
+    "SYSTEM": "System",
+}
+
+
+def _render_task_briefing(case, task, risk):
+    """
+    The operational briefing for one task on this case.
+
+    Sections and checklists rather than prose. The reader is a consultant
+    who wants to know what is missing and what to do next, and a
+    paragraph makes them extract that themselves.
+    """
+
+    briefing = build_task_briefing(
+        title=task[2],
+        case_fields=case_fields(case),
+        documents=get_documents(case[0]),
+        task_status=task[3] if len(task) > 3 else None,
+        risk_score=risk,
+    )
+
+    if not briefing["defined"]:
+        # The workflow emitted a task the catalogue does not define.
+        # Saying so is the point: describing it anyway would be the
+        # invention this whole design exists to prevent.
+        st.warning(t("task_briefing_not_defined").format(title=escape(str(task[2]))))
+        return
+
+    with st.container(border=True):
+
+        st.markdown(f"**{escape(briefing['title'])}**")
+
+        st.caption(escape(briefing["purpose"] or ""))
+
+        owner_column, status_column, risk_column = st.columns(3)
+
+        with owner_column:
+            st.caption(t("task_briefing_owner"))
+            st.markdown(
+                _OWNER_LABELS.get(briefing["owner"], briefing["owner"] or "—")
             )
+
+        with status_column:
+            st.caption(t("task_briefing_status"))
+            # Written out rather than built from the status value. A key
+            # assembled with an f-string cannot be checked statically, so
+            # a status with no translation would reach the screen as a
+            # raw key - and tests/test_i18n_completeness.py rejects the
+            # pattern for exactly that reason.
+            status_label = {
+                COMPLETE: t("task_status_complete"),
+                PENDING: t("task_status_pending"),
+                BLOCKED: t("task_status_blocked"),
+                WAITING_ON_AUTHORITY: t("task_status_waiting_on_authority"),
+            }.get(briefing["status"], t("task_status_not_defined"))
+
+            st.markdown(status_label)
+
+        with risk_column:
+            st.caption(t("task_briefing_risk"))
+            st.markdown("—" if briefing["risk_score"] is None
+                        else str(briefing["risk_score"]))
+
+        if briefing["compliance_checks"]:
+
+            st.caption(t("task_briefing_checks"))
+
+            for check in briefing["compliance_checks"]:
+                mark = "✅" if check["satisfied"] else "❌"
+                st.markdown(f"{mark} {escape(str(check['label']))}")
+
+        if briefing["blocking_conditions"]:
+
+            st.caption(t("task_briefing_blocking"))
+
+            for condition in briefing["blocking_conditions"]:
+                st.markdown(f"❌ {escape(str(condition))}")
+
+        # The two questions the user actually opened this for.
+        st.caption(t("task_briefing_can_advance"))
+
+        if briefing["can_advance"]:
+            st.success(escape(briefing["reason"]))
+        else:
+            st.error(escape(briefing["reason"]))
+
+        if briefing["next_action"]:
+            st.info(
+                t("task_briefing_next_action").format(
+                    action=escape(briefing["next_action"])
+                )
+            )
+
+        if briefing.get("note"):
+            st.caption(escape(briefing["note"]))
 
 
 def _render_operator_attachment(case_id, op_result):
@@ -219,13 +436,29 @@ def _render_operator_attachment(case_id, op_result):
         key=f"operator_attach_btn_{case_id}",
         type="primary",
     ):
-        if attach_operator_result(op_result, chosen):
+        held = current_upload(case_id)
+
+        if attach_operator_result(
+            op_result,
+            chosen,
+            case_id=case_id,
+            filename=held["filename"] if held else None,
+            file_bytes=held["bytes"] if held else None,
+        ):
             # Done with this file: it is recorded against a checklist
             # item. Clearing here is deliberate, and it is the only place
             # the workspace is emptied by a successful action.
             clear_upload(case_id)
             st.success(t("ai_operator_attached_note"))
             st.rerun()
+
+        else:
+            # The write matched no rows. Keep the upload - discarding the
+            # user's file after failing to record it would cost them the
+            # OCR run as well as the change.
+            st.error(
+                op_result.get("attach_error") or t("ai_operator_attach_failed")
+            )
 
 
 def _reset_pipeline_state_if_case_changed(case_id):
@@ -249,11 +482,16 @@ def _reset_pipeline_state_if_case_changed(case_id):
 
 def show_case_detail():
 
-    page_header(t("case_detail_header"))
+    # The page title used to read "Case Detail", which told the reader
+    # what kind of screen they were on and nothing about which case. The
+    # employee's name does that, so the name is the title - see below,
+    # where it is known.
 
     lang = get_lang()
 
     case_id = st.session_state.get("selected_case")
+
+    _forget_previous_case_state(case_id)
 
 
     if not case_id:
@@ -317,37 +555,36 @@ def show_case_detail():
     mode_display = mode_label(business_mode, lang)
 
 
+    # The screen's one h1, and it names the case rather than the kind of
+    # screen. "Case Detail" said what sort of page this was, which the
+    # sidebar already says; the person the file is about is the thing a
+    # consultant is actually looking for when they land here.
+    #
+    # It is also a document-outline requirement rather than decoration.
+    # A screen with no h1 is unnamed in the structure assistive
+    # technology reads, however clearly a visual heading identifies it -
+    # which is what tests/test_typography_hierarchy.py holds down for
+    # every screen, not just this one.
+    #
+    # No subtitle: the Case Overview panel begins immediately below and
+    # says what the section is. A line of context between the two would
+    # be a third thing to read before reaching the case.
+    page_header(employee_name)
+
+
     risk, trace = calculate_risk_from_rules(case)
 
     workflow = build_workflow_from_rules(case)
 
 
-    # Was st.columns([6, 1]): the left column was never written to, so it
-    # rendered as a tall empty gap under the page title, and 1/7 of the
-    # width was too narrow for the button label even before the viewport
-    # got small. 5:2 gives the label room at any realistic width, and the
-    # left column now carries the case identity instead of nothing.
-    top_left, top_right = st.columns([5, 2])
-
-    with top_left:
-        st.caption(f"{t('employee_caption')} · {employee_name}")
-
-    with top_right:
-
-        if st.button(
-            t("back_to_dashboard_button"),
-            key="back_to_dashboard_top"
-        ):
-
-            st.session_state["page"] = "Dashboard"
-
-            if "doc_report" in st.session_state:
-                del st.session_state["doc_report"]
-
-            st.rerun()
-
-
-    section_header(t("case_overview_header"))
+    # The "Back to Dashboard" button that stood here is gone. The
+    # sidebar carries Dashboard on every screen, so this was a second
+    # control for a navigation that was never unavailable - and it took
+    # the full width of a row to say it.
+    #
+    # It also held the only cleanup of `doc_report`, which is why that
+    # moved to where the case is read rather than being dropped with the
+    # button. See _forget_previous_case_state().
 
     # Risk thresholds are unchanged and stay here, where they already
     # lived - the badge component is told the level and never derives it.
@@ -358,141 +595,224 @@ def show_case_detail():
     else:
         risk_level, risk_text = "success", t("risk_low")
 
-    # Was st.columns(8). Eight fixed fractions left each field ~90px wide,
-    # so values wrapped one character per line ("Emplo/yee") and the risk
-    # alert rendered as a vertical strip of letters. field_grid states a
-    # minimum width per field and reflows to however many columns fit.
-    field_grid([
-        (t("employee_caption"), employee_name),
-        (t("nationality_caption"), nationality_display),
-        (t("canton_caption"), canton_display),
-        (t("permit_caption"), permit_display),
-        (t("mode_caption"), mode_display),
-        (t("status_caption"), status),
-        (t("company_caption"), company),
-        (
-            t("risk_score_label"),
-            None,
-            badge_html(risk_text, level=risk_level, score=risk),
-        ),
-    ])
-
-    _render_risk_provenance(trace)
-
-
-    section_header(t("workflow_stage_header"))
-
-    normalized_state = normalize_legacy_state(workflow_state)
-
-    current_index = get_state_index(normalized_state)
-
-    progress_value = int(
-        ((current_index + 1) / len(WORKFLOW_STATES))
-        * 100)
-
-    # Was seven vertical emoji bullets plus an st.progress bar, wrapped in
-    # a <div class="workflow-card"> whose opening and closing tags were
-    # emitted by two separate st.markdown calls - so the wrapper never
-    # wrapped anything and its CSS class was never defined either way.
+    # One bordered container holding the heading, the fields and the
+    # provenance lines, so the section reads as one object instead of
+    # three things that happen to be near each other.
     #
-    # Same stages, same order, same current position: only the drawing
-    # changed. Stage order and the active stage still come from
-    # core.workflow via WORKFLOW_STATES and get_state_index() above.
-    workflow_stepper(
-        stages=[
-            workflow_state_label(state, lang)
-            for state in WORKFLOW_STATES
-        ],
-        current_index=current_index,
-        progress_percent=progress_value,
-        progress_label=t("progress_label"),
-        current_stage_label=t("current_stage"),
-        stage_word=t("stage_word"),
-    )
+    # st.container(border=True) rather than a wrapper <div>: Streamlit
+    # renders every markdown call into its own DOM container, so an
+    # opening tag emitted by one call and a closing tag emitted by
+    # another never wrap what is between them. That was already learned
+    # here once - see apps/web/components/workflow.py - and the class it
+    # produced styled nothing.
+    overview_box = st.container(border=True)
+
+    with overview_box:
+
+        panel_marker()
+
+        # Just the section name. The employee used to be repeated here,
+        # on this heading line, because the page had no title of its own
+        # to carry them; now it does, directly above this panel. Naming
+        # the same person twice within one screenful is not emphasis, it
+        # is the reader checking whether the two are the same person.
+        section_header(t("case_overview_header"), tight=True)
+
+        # Was st.columns(8). Eight fixed fractions left each field ~90px wide,
+        # so values wrapped one character per line ("Emplo/yee") and the risk
+        # alert rendered as a vertical strip of letters. field_grid states a
+        # minimum width per field and reflows to however many columns fit.
+        # Six fields, not eight, and on one row.
+        #
+        # Employee and Company were dropped rather than squeezed. The
+        # employee name is already the page title immediately above this,
+        # and Company is the tenant - identical on every case in the
+        # account, so it distinguishes nothing.
+        #
+        # STATUS was dropped when the bordered container narrowed the row
+    # and Risk Score wrapped to a second line. It was the field to
+    # lose: Workflow Stage below states the same thing at more
+    # resolution, so the card was a coarser copy of the panel under
+    # it - and the legacy `status` column it reads is the same
+    # duplication at the data layer.
+    #
+    # Eight fields cannot share a row at a readable width: at ~85px each
+        # the values wrap mid-word, which is the exact failure this grid was
+        # built to fix. Removing what is redundant is what makes one row
+        # possible; shrinking further would only bring the wrapping back.
+        field_grid(
+            [
+                (t("nationality_caption"), nationality_display),
+                (t("canton_caption"), canton_display),
+                (t("permit_caption"), permit_display),
+                (t("mode_caption"), mode_display),
+                    (
+                    t("risk_score_label"),
+                    None,
+                    badge_html(risk_text, level=risk_level, score=risk),
+                ),
+            ],
+            compact=True,
+        )
+
+        _render_risk_provenance(trace)
 
 
-    next_state = get_next_state(
-        normalized_state)
+    # Same treatment: the stage track had no boundary of its own, so it
+    # read as loose furniture between two sections rather than as one
+    # thing.
+    workflow_box = st.container(border=True)
 
-    action_col1, action_col2 = st.columns(
-        [2, 3])
+    with workflow_box:
 
-    with action_col1:
-        if next_state:
-            next_label = workflow_state_label(
-                next_state,
-                lang)
+        panel_marker()
 
-            if st.button(
-                f"➡️ {t('advance_stage_button')} {next_label}",
-                type="primary",
-                key="advance_stage_btn"
-            ):
+        # Heading, track and counter on one row - see
+        # apps/web/components/workflow.py:workflow_stage_row for why all
+        # three have to come from a single markdown call.
+        normalized_state = normalize_legacy_state(workflow_state)
 
-                set_workflow_state(
-                    case_id,
-                    next_state
-                )
-                st.rerun()
-        else:
-            st.success(
-                t("workflow_completed_message"))
-    with action_col2:
-        with st.expander(
-            f"⚙️ {t('manual_override_title')}"
-        ):
-            override_choice = st.selectbox(
+        current_index = get_state_index(normalized_state)
 
-                t("override_stage_label"),
+        progress_value = int(
+            ((current_index + 1) / len(WORKFLOW_STATES))
+            * 100)
 
-                WORKFLOW_STATES,
-
-                index=current_index,
-
-                format_func=lambda s:
-                    workflow_state_label(
-                        s,
-                        lang
-                    ),
-
-                key="override_stage_select"
-
-            )
+        workflow_stage_row(
+            title=t("workflow_stage_header"),
+            stages=[
+                workflow_state_label(state, lang)
+                for state in WORKFLOW_STATES
+            ],
+            current_index=current_index,
+            progress_percent=progress_value,
+            progress_label=t("progress_label"),
+            current_stage_label=t("current_stage"),
+            stage_word=t("stage_word"),
+        )
 
 
-            override_note = st.text_input(
+        # Inside the workflow container: these two controls act on the
+        # stage shown above them, and sitting outside the box they read
+        # as page-level actions rather than as part of the stage.
+        next_state = get_next_state(
+            normalized_state)
 
-                t("override_reason_label"),
+        action_col1, action_col2 = st.columns(
+            [2, 3])
 
-                key="override_reason"
+        # Whether the case is allowed to advance.
+        #
+        # The product already knew this - core.tasks.briefing computes
+        # can_advance per task and the document checklist knows what is
+        # missing - and the stage button asked neither. A case with four
+        # of five documents missing offered a blue primary "Advance to
+        # Review" and moved on when pressed.
+        #
+        # That is not a cosmetic gap. Work may not begin before an
+        # authorisation exists (Art. 11 AIG), and a product sold to
+        # relocation firms on the promise of catching exactly this kind
+        # of omission cannot be the thing that waves it through. A
+        # checklist that records a problem and a button that ignores it
+        # are two features that disagree, and the button is the one the
+        # user believes.
+        blocking_documents = [
+            document[2] for document in get_documents(case_id)
+            if document[3] != "UPLOADED"
+        ]
 
-            )
+        with action_col1:
+            if next_state:
+                next_label = workflow_state_label(
+                    next_state,
+                    lang)
 
-            if st.button(
-
-                t("apply_override_button"),
-
-                key="apply_override_btn"
-
-            ):
-
-                if override_choice != normalized_state:
-
-
-                    set_workflow_state(
-
-                        case_id,
-
-                        override_choice,
-
-                        note=override_note
-                        if override_note
-                        else "manual override"
-
+                if blocking_documents:
+                    st.caption(
+                        t("advance_blocked_note").format(
+                            count=len(blocking_documents),
+                            first=blocking_documents[0],
+                        )
                     )
 
+                if st.button(
+                    f"➡️ {t('advance_stage_button')} {next_label}",
+                    type="primary",
+                    key="advance_stage_btn",
+                    # Disabled, not hidden. A missing control reads as a
+                    # broken page; a disabled one with the reason beside
+                    # it reads as the product doing its job. Manual stage
+                    # override sits alongside for the cases where a
+                    # consultant knows something the checklist does not -
+                    # it records a reason, so the decision stays
+                    # attributable.
+                    disabled=bool(blocking_documents),
+                ):
 
+                    set_workflow_state(
+                        case_id,
+                        next_state
+                    )
                     st.rerun()
+            else:
+                st.success(
+                    t("workflow_completed_message"))
+        with action_col2:
+            with st.expander(
+                f"⚙️ {t('manual_override_title')}"
+            ):
+                override_choice = st.selectbox(
+
+                    t("override_stage_label"),
+
+                    WORKFLOW_STATES,
+
+                    index=current_index,
+
+                    format_func=lambda s:
+                        workflow_state_label(
+                            s,
+                            lang
+                        ),
+
+                    key="override_stage_select"
+
+                )
+
+
+                override_note = st.text_input(
+
+                    t("override_reason_label"),
+
+                    key="override_reason"
+
+                )
+
+                if st.button(
+
+                    t("apply_override_button"),
+
+                    key="apply_override_btn"
+
+                ):
+
+                    if override_choice != normalized_state:
+
+
+                        set_workflow_state(
+
+                            case_id,
+
+                            override_choice,
+
+                            note=override_note
+                            if override_note
+                            else "manual override"
+
+                        )
+
+
+                        st.rerun()
 
 
     # Nine expanders used to sit stacked on this page, so a single case
@@ -642,23 +962,23 @@ def show_case_detail():
                         )
 
 
-                    # Rendered below the row rather than in a side column:
-                    # an explanation is prose and needs the full width, and
-                    # only one task shows one at a time. Same call, same
-                    # prompt, same result - only the placement changed.
+                    # Computed, not generated.
+                    #
+                    # This previously sent the model the task title and
+                    # nothing else - no case, no documents, no risk - so
+                    # the only question it could answer was "what is this
+                    # kind of task in general", and it answered it with an
+                    # article. The case was never in the prompt.
+                    #
+                    # Every field below is derived from the case row, the
+                    # document rows and the task catalogue. No model is
+                    # involved: "Can Advance? No - Employment Contract not
+                    # uploaded" is a statement a consultant acts on and a
+                    # customer is billed against, and it has to be
+                    # reproducible and auditable rather than fluent.
                     if ai_clicked:
 
-                        with st.spinner(t("ai_task_thinking_label")):
-
-                            answer = ask_ai(
-                                f"""
-        Explain this Swiss relocation task:
-
-        {task[2]}
-
-        Give a short operational explanation. """)
-
-                        st.info(answer)
+                        _render_task_briefing(case, task, risk)
 
     with documents_tab:
 
@@ -675,24 +995,41 @@ def show_case_detail():
                     ]
                 )
 
-                docs_main, docs_metric = st.columns([4, 1])
+                # A progress bar above the list rather than a metric
+                # beside it. st.metric rendered "1/5" at display size -
+                # the largest thing in the panel, larger than the
+                # document names it summarised, and vertically adrift
+                # from the rows it described. A count is context for the
+                # list, not the headline of it.
+                st.progress(
+                    uploaded / len(docs),
+                    text=f"{t('uploaded_metric')} {uploaded}/{len(docs)}",
+                )
 
-                with docs_metric:
-
-                    st.metric(
-                        t("uploaded_metric"),
-                        f"{uploaded}/{len(docs)}"
-                    )
-
-                with docs_main:
+                with st.container():
 
                     for doc in docs:
 
-                        name_col, status_col = st.columns([5, 1])
+                        # 5:1 gave the status control about 90px, so the
+                        # only word that matters on the row rendered as
+                        # "MISSIN" and "UPLOA". A checklist whose status
+                        # column is unreadable is not a checklist.
+                        name_col, status_col = st.columns([3, 2])
 
                         with name_col:
 
                             st.write(f"📄 {doc[2]}")
+
+                            # The stored original, if there is one.
+                            #
+                            # Until now nothing on this page showed that a
+                            # file had been kept, so an upload left no
+                            # visible trace and users re-uploaded the same
+                            # document on every visit. A row with no
+                            # stored file says so rather than showing
+                            # nothing, because "analysed but not retained"
+                            # and "never uploaded" are different states.
+                            _render_stored_file(doc)
 
                         with status_col:
 
@@ -805,6 +1142,16 @@ def show_case_detail():
                         # and the risk engine, the workflow gate and the
                         # submission check all read that status without
                         # re-checking the file.
+                        # Shown before the attachment step, not buried
+                        # in the numbered list below it. A document whose
+                        # name does not match the case is the one fact
+                        # that should stop a user attaching it - and the
+                        # generated email carries the case name, so a
+                        # mismatch means correspondence addressed to the
+                        # wrong person.
+                        for warning in op_result.get("validation_warnings") or []:
+                            st.warning(warning)
+
                         if not op_result.get("attached"):
                             _render_operator_attachment(case_id, op_result)
 

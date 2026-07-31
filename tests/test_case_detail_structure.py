@@ -35,7 +35,7 @@ EXPECTED_TABS = [
 
 # Above the tabs: identity, risk and workflow position stay on screen
 # whichever tab is open. This is the whole point of the restructure.
-ALWAYS_VISIBLE_CALLS = ["field_grid", "workflow_stepper"]
+ALWAYS_VISIBLE_CALLS = ["field_grid", "workflow_stage_row"]
 
 
 def _tree():
@@ -207,7 +207,7 @@ def test_shared_context_is_assigned_before_the_tabs(name):
     )
 
 
-def test_workflow_stepper_is_used_instead_of_per_stage_markdown():
+def test_workflow_stage_row_is_used_instead_of_per_stage_markdown():
     """
     The stepper replaced a loop that emitted one st.markdown per stage,
     wrapped in a <div> whose opening and closing tags were separate calls
@@ -223,7 +223,7 @@ def test_workflow_stepper_is_used_instead_of_per_stage_markdown():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
 
-    assert "workflow_stepper" in called
+    assert "workflow_stage_row" in called
 
     # Checked against string literals rather than the raw file, so the
     # comment explaining why these classes were removed does not itself

@@ -269,3 +269,55 @@ def test_no_module_reads_a_case_row_by_a_bare_number():
         + "\n\nUse a CASE_INDEX_* constant, which this file checks "
           "against load_case()'s own SELECT."
     )
+
+
+# ------------------------------------------------------- document rows ---
+#
+# get_documents() uses SELECT *, so its column order is the CREATE TABLE
+# order. The case page reads file_path by index to offer the stored
+# original for download - the same positional pattern that read tenant_id
+# as an arrival date for months.
+
+def _documents_columns():
+    """Column names of the documents table, in CREATE TABLE order."""
+
+    start = DATABASE_SOURCE.index("CREATE TABLE IF NOT EXISTS documents")
+    block = DATABASE_SOURCE[start:DATABASE_SOURCE.index(")", start)]
+
+    columns = []
+
+    for line in block.splitlines()[1:]:
+        name = re.sub(r"--.*", "", line).strip().split(" ")[0].strip(",")
+        if name:
+            columns.append(name)
+
+    return columns
+
+
+def test_the_document_file_path_is_where_the_page_reads_it():
+    """
+    apps/web/views/case_detail.py._render_stored_file reads
+    document[4] as file_path and document[3] as status.
+
+    A column inserted before them would make the page offer the extracted
+    text as a download, or read a filename as a status. Both fail
+    silently: the button renders either way.
+    """
+
+    columns = _documents_columns()
+
+    assert columns[3] == "status", f"index 3 is {columns[3]!r}, not status"
+    assert columns[4] == "file_path", f"index 4 is {columns[4]!r}, not file_path"
+
+
+def test_the_page_names_those_indices_rather_than_writing_bare_numbers():
+
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "apps" / "web" / "views" / "case_detail.py"
+    ).read_text(encoding="utf-8")
+
+    assert "DOCUMENT_INDEX_FILE_PATH" in source
+    assert "DOCUMENT_INDEX_STATUS" in source

@@ -6,7 +6,12 @@ pytest>=8.0
 python-dotenv>=1.0
 
 # ---------------- Core app ----------------
-streamlit>=1.35
+# 1.40 is the floor, not 1.35: apps/web/session.py reads the browser
+# session out of st.context.cookies, and on anything older that attribute
+# does not exist. The failure would be silent and specific - every user
+# signed out by every page refresh, on a build that installed correctly
+# and started without complaint.
+streamlit>=1.40
 pandas>=2.0
 
 # ---------------- Database (PostgreSQL) ----------------

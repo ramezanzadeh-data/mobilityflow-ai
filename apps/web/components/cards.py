@@ -175,7 +175,7 @@ def record_row(items) -> None:
     st.markdown(record_row_html(items), unsafe_allow_html=True)
 
 
-def field_grid(fields) -> None:
+def field_grid(fields, compact=False) -> None:
     """
     Render label/value pairs as a responsive grid.
 
@@ -183,6 +183,11 @@ def field_grid(fields) -> None:
         fields: Sequence of ``(label, value)`` pairs, or
             ``(label, value, value_html)`` triples where the third item is
             pre-rendered markup such as a badge.
+        compact: Narrower cells, so a short row of summary facts stays on
+            one line instead of reflowing onto two. Use only with a small
+            number of fields - the floor is 120px per cell, and below that
+            values start wrapping again, which is the failure this
+            component exists to prevent.
 
     Emitted as a single ``st.markdown`` call rather than one per field:
     Streamlit wraps every element in its own flex container, so per-field
@@ -200,7 +205,22 @@ def field_grid(fields) -> None:
 
         cells.append(field_html(label, value, value_html))
 
-    st.markdown(
-        f'<div class="mf-field-grid">{"".join(cells)}</div>',
-        unsafe_allow_html=True,
-    )
+    # The two class strings are written out rather than interpolated
+    # from a variable. tests/test_ui_html_escaping.py rejects any value
+    # placed into unsafe_allow_html markup unless it comes from a known
+    # escaping helper - and it cannot tell a literal this file controls
+    # from case data. Widening that rule to admit "variables I promise
+    # are safe" is how the exemption eventually covers something that is
+    # not, so the literal is repeated instead.
+    if compact:
+        st.markdown(
+            '<div class="mf-field-grid mf-field-grid--compact">'
+            + "".join(cells)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="mf-field-grid">' + "".join(cells) + "</div>",
+            unsafe_allow_html=True,
+        )

@@ -108,7 +108,48 @@ def page_header(title, subtitle=None) -> None:
     )
 
 
-def section_header(title, description=None) -> None:
+def panel_marker() -> None:
+    """
+    Mark a bordered container as one this stylesheet styles.
+
+    Emitted as the first thing inside the container, and paired with a
+    :has() rule in theme.py. The obvious alternative - styling
+    [data-testid="stVerticalBlockBorderWrapper"] directly - was rejected
+    because Streamlit emits that wrapper for every container, not only
+    the ones created with border=True, so the rule would draw a border
+    around things that are not panels. That could not be verified from
+    here without a browser, and a selector whose blast radius is unknown
+    is not one to ship.
+
+    This is exact instead: the border follows the marker, and the marker
+    is only where it is put.
+    """
+
+    st.markdown(
+        '<span class="mf-panel-marker"></span>',
+        unsafe_allow_html=True,
+    )
+
+
+# section_header_with_meta() and section_header_with_identity() stood
+# here: a section heading with a counter, and a section heading with the
+# case subject, each on one line.
+#
+# Both lost their last caller. The stage counter moved into
+# workflow_stage_row(), which draws the heading, the track and the
+# counter as one row because all three describe the same thing; and the
+# employee's name became the page title, so no heading carries an
+# identity beside it any more.
+#
+# Deleted rather than kept for later. An exported component with no
+# callers still has to be read, reviewed and kept working by everyone who
+# touches this file, and its stylesheet rules went with it - see the note
+# in components/theme.py. If a heading needs something beside it again,
+# workflow_stage_row() is the worked example, including why it has to be
+# a single st.markdown call.
+
+
+def section_header(title, description=None, tight=False) -> None:
     """
     A division within a screen. Always below page_header in the
     hierarchy, never used as a page title.
@@ -117,6 +158,10 @@ def section_header(title, description=None) -> None:
         title: Section name.
         description: What the section is for, when that is not obvious
             from the title alone.
+        tight: Reduce the space above. For a section that directly
+            follows the page identity, where the standard 32px separates
+            a heading from the thing it belongs to rather than from the
+            previous section.
     """
 
     description_html = (
@@ -125,10 +170,18 @@ def section_header(title, description=None) -> None:
         else ""
     )
 
+    # Written out rather than interpolated: the XSS guard rejects any
+    # variable inside unsafe_allow_html markup, and the rule is worth
+    # more than the repetition costs.
+    opening = (
+        '<div class="mf-section mf-section--tight">' if tight
+        else '<div class="mf-section">'
+    )
+
     st.markdown(
-        '<div class="mf-section">'
-        f'<h2 class="mf-section__title">{escape(str(title))}</h2>'
-        f"{description_html}"
-        "</div>",
+        opening
+        + f'<h2 class="mf-section__title">{escape(str(title))}</h2>'
+        + description_html
+        + "</div>",
         unsafe_allow_html=True,
     )

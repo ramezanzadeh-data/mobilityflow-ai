@@ -53,10 +53,12 @@ def operator(monkeypatch):
             "summary": "A passport.",
         },
     )
-    monkeypatch.setattr(
-        module, "save_document_analysis",
-        lambda **kwargs: recorded["analysis_saved"].append(kwargs),
-    )
+    def fake_save(**kwargs):
+        recorded["analysis_saved"].append(kwargs)
+        # Mirrors the real signature: True when a row was written.
+        return recorded.get("write_succeeds", True)
+
+    monkeypatch.setattr(module, "save_document_analysis", fake_save)
 
     monkeypatch.setattr(module, "validate_document_against_case", lambda f, c: [])
     monkeypatch.setattr(module, "check_expiry", lambda facts: ("unknown", None))
@@ -232,4 +234,62 @@ def test_the_page_passes_a_target_or_asks_for_one():
         "and without asking for one afterwards, so the upload is "
         "processed and never recorded - the checklist item stays MISSING "
         "while the page reports success."
+    )
+
+
+def test_a_write_that_changes_nothing_is_not_reported_as_success(operator):
+    """
+    The failure a user hit: Attach reported success and the checklist
+    stayed at 0/5.
+
+    save_document_analysis() can match zero rows and raise nothing.
+    `documents` is under FORCE ROW LEVEL SECURITY, and a row whose
+    tenant_id is NULL is invisible to a session that has a tenant set -
+    NULL = 3 is neither true nor false. The UPDATE then touches nothing
+    and returns normally.
+
+    Reporting that as success is worse than the missing write itself: the
+    user believes the record is correct and stops checking.
+    """
+
+    operator._recorded["write_succeeds"] = False
+
+    result = operator.run_ai_operator(CASE, b"pdf bytes")
+
+    assert operator.attach_operator_result(result, 9) is False
+
+    assert result["attached"] is False
+    assert result["attach_error"], (
+        "the failure has to say something the user can act on - a silent "
+        "False leaves the page with nothing to show"
+    )
+
+
+def test_a_failed_write_from_the_operator_itself_is_not_claimed(operator):
+    """Same property on the path that attaches during the run."""
+
+    operator._recorded["write_succeeds"] = False
+
+    result = operator.run_ai_operator(CASE, b"pdf bytes", target_doc_id=7)
+
+    assert result["attached"] is False
+    assert result["attached_doc_id"] is None
+
+
+def test_the_page_reports_a_failed_attachment(operator):
+    """
+    A static check on the call site. Success and failure must render
+    differently - the whole defect was one message for both.
+    """
+
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "apps" / "web" / "views" / "case_detail.py"
+    ).read_text(encoding="utf-8")
+
+    assert "attach_error" in source, (
+        "case_detail.py does not surface attach_error, so a write that "
+        "changed nothing still shows as attached"
     )

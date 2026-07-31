@@ -1,5 +1,6 @@
 
 import json
+import logging
 from datetime import date, timedelta
 
 from core.documents.ocr import extract_text_from_pdf, OCRDependencyError
@@ -13,6 +14,7 @@ from core.rules.risk import calculate_risk_from_rules
 from core.rules.engine import build_workflow_from_rules
 from core.workflow.states import normalize_legacy_state, get_next_state
 from core.communication.email import generate_email
+from core.storage.object_storage import ensure_bucket_exists, upload_bytes
 
 from db.database import (
     get_documents,
@@ -23,10 +25,44 @@ from db.database import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 REMINDER_DAYS_AHEAD = 7
 
 
-def attach_operator_result(result, doc_id):
+def _store_uploaded_file(case_id, doc_id, filename, file_bytes):
+    """
+    Put the uploaded file in object storage and return its key.
+
+    Returns "" when there is nothing to store or storage is unavailable.
+    An empty file_path is an honest record of "we analysed this and did
+    not keep the original"; a fabricated path would be worse, because
+    every later attempt to fetch it would fail with no explanation.
+    """
+
+    if not (case_id and doc_id and filename and file_bytes):
+        return ""
+
+    key = f"documents/{case_id}/{doc_id}/{filename}"
+
+    try:
+        ensure_bucket_exists()
+        upload_bytes(key, file_bytes, content_type="application/pdf")
+
+    except Exception:  # noqa: BLE001 - see the caller's docstring
+        logger.warning(
+            "Could not store the uploaded file for document %s. The "
+            "analysis was kept; the original was not.",
+            doc_id,
+            exc_info=True,
+        )
+        return ""
+
+    return key
+
+
+def attach_operator_result(result, doc_id, case_id=None, filename=None,
+                           file_bytes=None):
     """
     Record an already-processed upload against a checklist row.
 
@@ -38,9 +74,21 @@ def attach_operator_result(result, doc_id):
 
     Returns True if the status was recorded.
 
-    Lives here rather than in the page because it is the same write the
-    operator performs when given a target up front - one definition of
-    "this file satisfies that obligation", not two.
+    The file itself
+    ---------------
+    ``file_bytes`` is stored in object storage and its key recorded, the
+    same way core.documents.document_processing_service does it. Without
+    that, this path wrote the literal string "uploaded_via_ai_operator"
+    into file_path and dropped the bytes: the extracted text was kept,
+    the document was not, and a user who came back the next day had to
+    upload it again to see anything. Two upload paths, one of which
+    quietly discarded the file.
+
+    Storage failure does not block the status change. The extraction is
+    already done and the checklist item genuinely is satisfied; refusing
+    to record that because MinIO is unreachable would lose more than it
+    protects. The file_path is left empty instead, which the screen can
+    read as "analysed, original not retained".
     """
 
     extraction = result.get("extraction") if result else None
@@ -50,17 +98,33 @@ def attach_operator_result(result, doc_id):
 
     key_facts = (result.get("classification") or {}).get("key_facts") or {}
 
-    save_document_analysis(
+    storage_key = _store_uploaded_file(case_id, doc_id, filename, file_bytes)
+
+    written = save_document_analysis(
         doc_id=doc_id,
-        file_path="uploaded_via_ai_operator",
+        file_path=storage_key,
         extracted_text=extraction["text"],
         extracted_fields_json=json.dumps(key_facts),
         ocr_method=extraction["method"],
         ocr_confidence=None,
     )
 
+    # The write can match zero rows without raising - see
+    # db.database.save_document_analysis. Reporting success for a status
+    # change that did not happen is the defect this whole path already
+    # had once; do not reintroduce it one layer up.
+    if not written:
+        result["attached"] = False
+        result["attach_error"] = (
+            "The document status could not be updated. The row was not "
+            "visible to this session - most often because the case or the "
+            "document has no tenant recorded. Nothing was changed."
+        )
+        return False
+
     result["attached"] = True
     result["attached_doc_id"] = doc_id
+    result["attach_error"] = None
 
     return True
 
@@ -100,6 +164,7 @@ def run_ai_operator(case, file_bytes, target_doc_id=None):
         "next_stage_recommendation": None,
         "attached": False,
         "attached_doc_id": None,
+        "attach_error": None,
         "error": None,
     }
 
@@ -131,7 +196,7 @@ def run_ai_operator(case, file_bytes, target_doc_id=None):
     # other than having been told which row this is.
     if target_doc_id:
 
-        save_document_analysis(
+        written = save_document_analysis(
             doc_id=target_doc_id,
             file_path="uploaded_via_ai_operator",
             extracted_text=extraction["text"],
@@ -140,8 +205,8 @@ def run_ai_operator(case, file_bytes, target_doc_id=None):
             ocr_confidence=None,
         )
 
-        result["attached"] = True
-        result["attached_doc_id"] = target_doc_id
+        result["attached"] = bool(written)
+        result["attached_doc_id"] = target_doc_id if written else None
 
 
     docs = get_documents(case_id)

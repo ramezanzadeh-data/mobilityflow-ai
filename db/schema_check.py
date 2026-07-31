@@ -57,6 +57,20 @@ REQUIRED_COLUMNS = {
         "next_attempt_at": "0005_webhook_outbox",
         "last_status_code": "0005_webhook_outbox",
     },
+    "refresh_tokens": {
+        # The idle check fails closed: no last_seen_at means idle. Ship
+        # the code without the column and every user is signed out on
+        # their next page load, with nothing naming a missing column as
+        # the cause.
+        "last_seen_at": "0009_session_idle_timeout",
+    },
+    "session_handoff": {
+        # Both are load-bearing rather than incidental: consumed_at is
+        # what makes redemption single-use, and session_id is what lets
+        # Log out revoke a cookie session it cannot see.
+        "consumed_at": "0008_session_handoff",
+        "session_id": "0008_session_handoff",
+    },
 }
 
 REQUIRED_TABLES = {
@@ -65,6 +79,12 @@ REQUIRED_TABLES = {
     # a committed event owes, and the failure would appear on the user's
     # first case creation rather than at startup.
     "webhook_outbox": "0005_webhook_outbox",
+    # Without this table no login can move its session into an HttpOnly
+    # cookie. Nothing visibly breaks - the query-string fallback keeps
+    # people signed in - which is exactly why it is checked here. A
+    # security control that silently stops applying is worse than one
+    # that was never added, because the deployment believes it has it.
+    "session_handoff": "0008_session_handoff",
 }
 
 
