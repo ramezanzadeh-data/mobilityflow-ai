@@ -1,5 +1,17 @@
 # ---------------- Dev/Test only ----------------
 pytest>=8.0
+# pyyaml: tests/test_reverse_proxy_config.py reads docker-compose.yml to
+# assert on it - that the proxy waits for what it proxies, that no direct
+# port bypasses it, that the config is mounted read-only.
+#
+# Declared here because it was not, and the consequence was precise: the
+# suite passed on every machine where something else had already pulled
+# PyYAML in, and failed only in CI, which installs exactly what this file
+# says. An undeclared dependency does not make a test optional, it makes
+# it conditional on somebody's history.
+#
+# Test-time only - no application module imports yaml.
+pyyaml>=6.0
 # python-dotenv: conftest.py loads .env so a bare `pytest` run sees the
 # same configuration Docker Compose injects into the containers.
 # Test-time only - the application itself never imports it.
