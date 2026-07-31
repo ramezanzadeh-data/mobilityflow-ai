@@ -28,6 +28,7 @@ celery_app = Celery(
         # away. tests/test_webhook_outbox_is_the_only_path.py fails if it
         # comes back.
         "workers.outbox_tasks",
+        "workers.session_tasks",
     ],
 )
 
@@ -127,6 +128,27 @@ celery_app.conf.update(
                 # sweep would do the same work, so a backlog of identical
                 # sweeps is pure waste.
                 "expires": 9.0,
+            },
+        },
+
+        # Once a day, because nothing waits on it.
+        #
+        # One handoff row is written per login and kept well past expiry:
+        # it links a browser session to the code that minted it, which is
+        # how logging out revokes a session the tab cannot see. Small,
+        # and unbounded - the shape of table that is fine for a year and
+        # then is not.
+        #
+        # With no beat running, rows accumulate and nothing breaks. The
+        # oldest of them stopped being redeemable thirty seconds after
+        # they were written.
+        "purge-session-handoffs": {
+            "task": "workers.session_tasks.purge_session_handoffs",
+            "schedule": 24 * 60 * 60.0,
+            "options": {
+                # A day's worth of rows is not urgent enough to queue
+                # behind itself; tomorrow's run removes them instead.
+                "expires": 60 * 60.0,
             },
         },
     },

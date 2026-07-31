@@ -39,7 +39,8 @@ def _stage_state(index: int, current_index: int) -> str:
     return "upcoming"
 
 
-def workflow_stepper(
+def workflow_stage_row(
+    title,
     stages,
     current_index: int,
     progress_percent: int,
@@ -48,20 +49,49 @@ def workflow_stepper(
     stage_word: str,
 ) -> None:
     """
-    Render the case workflow as a horizontal stepper.
+    Heading, track and stage counter on one row.
 
-    Args:
-        stages: Display labels, already translated, in order.
-        current_index: Position of the active stage.
-        progress_percent: Completion percentage, computed by the caller so
-            this component never re-derives a number the page already has.
-        progress_label: Translated word for "Progress".
-        current_stage_label: Translated words for "current stage",
-            announced to screen readers on the active step.
-        stage_word: Translated word for "Stage", used in "Stage 2 of 7".
+    All three describe the same thing, and stacked they made the reader
+    assemble them: a title, then a track, then a counter underneath. Side
+    by side they read as one statement - "Workflow Stage: [track] 1/7".
 
-    Emitted as one ``st.markdown`` call - see the module docstring.
+    Emitted as a single st.markdown call, which is not a style choice.
+    Streamlit renders each markdown call into its own DOM container, so
+    three calls could never share a flex row however the CSS was written;
+    that is the same constraint recorded at the top of this module, where
+    a wrapper div split across two calls wrapped nothing.
     """
+
+    # Both built before the markup rather than inlined into it.
+    #
+    # Not a style preference. tests/test_ui_html_escaping.py reads this
+    # file rather than running it, so it can only trust an interpolation
+    # it can recognise: a call to a known escaping producer, or a local
+    # on its explicit list. A call to _steps_html() inlined in the
+    # template is escaped in fact and unverifiable in form, and the guard
+    # cannot tell that apart from the stored-XSS it exists to catch.
+    #
+    # The same goes for the counter. `{current_index + 1}/{len(stages)}`
+    # is arithmetic and can only ever be digits, but teaching the rule to
+    # trust arbitrary expressions would also teach it to trust `a + b` on
+    # two strings - so the counter is assembled here and escaped as one
+    # value instead.
+    steps_html = _steps_html(stages, current_index, current_stage_label)
+
+    counter = f"{stage_word} {current_index + 1}/{len(stages)}"
+
+    st.markdown(
+        '<div class="mf-stage-row">'
+        f'<h2 class="mf-section__title mf-stage-row__title">{escape(str(title))}</h2>'
+        f'<ol class="mf-stepper__track">{steps_html}</ol>'
+        f'<div class="mf-section__meta mf-stage-row__meta">{escape(counter)}</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _steps_html(stages, current_index, current_stage_label):
+    """The <li> elements for a track. Shared by both renderers."""
 
     steps_html = []
 
@@ -69,12 +99,10 @@ def workflow_stepper(
 
         state = _stage_state(index, current_index)
 
-        # aria-current is the standard way to tell assistive technology
-        # which step of a process the user is on.
         aria = ' aria-current="step"' if state == "current" else ""
 
         screen_reader_note = (
-            f'<span class="mf-visually-hidden"> — {escape(current_stage_label)}</span>'
+            f'<span class="mf-visually-hidden"> \u2014 {escape(current_stage_label)}</span>'
             if state == "current"
             else ""
         )
@@ -87,15 +115,4 @@ def workflow_stepper(
             f"</li>"
         )
 
-    position = (
-        f"{escape(stage_word)} {current_index + 1}/{len(stages)}"
-        f" · {escape(progress_label)} {int(progress_percent)}%"
-    )
-
-    st.markdown(
-        f'<div class="mf-stepper">'
-        f'<ol class="mf-stepper__track">{"".join(steps_html)}</ol>'
-        f'<div class="mf-stepper__meta">{position}</div>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    return "".join(steps_html)

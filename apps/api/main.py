@@ -8,12 +8,32 @@ from bootstrap import load_environment
 
 load_environment()
 
+# Refuse to start on a setting nothing reads.
+#
+# A misspelt MOBILITYFLOW_* variable is silently ignored, which for a
+# session lifetime or a cookie flag means a deployment that believes it
+# has a control it does not have. Raising here rather than logging: this
+# process is restarted by an orchestrator, so a crash loop with the
+# reason in it is read, and a warning in a container log is not.
+#
+# Same treatment as a missing JWT_SECRET_KEY below - see auth/jwt.py.
+from bootstrap import (  # noqa: E402  (deliberate - see above)
+    describe_problems as _describe_config_problems,
+    find_config_problems as _find_config_problems,
+)
+
+_config_problems = _find_config_problems()
+
+if _config_problems:
+    raise RuntimeError(_describe_config_problems(_config_problems))
+
 from fastapi import APIRouter, FastAPI  # noqa: E402  (deliberate - see above)
 from fastapi.openapi.utils import get_openapi  # noqa: E402
 
 from apps.api.middleware.security import SecurityHeadersMiddleware  # noqa: E402
 from apps.api.routes import (  # noqa: E402
     auth,
+    browser_session,
     cases,
     webhooks,
     documents,
@@ -135,6 +155,23 @@ v1_router.include_router(webhooks.router)
 
 
 app.include_router(v1_router)
+
+
+# -------------------------------
+# Browser session (not versioned)
+# -------------------------------
+#
+# Mounted at the app root, outside /api/v1, and reachable through
+# deploy/nginx.conf as /api/session/*.
+#
+# /api/v1 is a contract with integrators: Bearer tokens, a version
+# number, and a promise of stability. These endpoints are the web app
+# talking to its own backend over cookies, same-origin only, and they
+# change whenever apps/web does. Publishing them alongside the REST API
+# would commit the product to keeping them still for callers who should
+# never have found them - and would put a cookie-authenticated path into
+# a surface whose entire authentication story is a Bearer token.
+app.include_router(browser_session.router)
 
 
 # -------------------------------

@@ -1,6 +1,8 @@
 import streamlit as st
 
 from apps.web.components.layout import page_header, section_header
+from apps.web.session import forget_session
+from db.database import revoke_all_sessions_for_user
 
 from auth.password import verify_password, hash_password
 from db.database import get_user, update_user_password
@@ -13,6 +15,35 @@ def show_settings(forced=False):
 
     if forced:
         st.warning(t("must_change_password_notice"))
+
+    # Sessions.
+    #
+    # The browser session token travels in the URL, because Streamlit
+    # cannot set an HttpOnly cookie from Python - see apps/web/session.py.
+    # That means a printed page, a screenshot or a copied link carries a
+    # working session until it expires, and a user who has just realised
+    # that needs a way to close every one at once without hunting.
+    #
+    # This does not fix the exposure. It makes it recoverable in one
+    # click, and it says so plainly rather than leaving the user to
+    # discover the property from a PDF.
+    section_header(t("sessions_header"))
+
+    st.caption(t("sessions_url_warning"))
+
+    if st.button(t("revoke_all_sessions_button")):
+
+        revoke_all_sessions_for_user(st.session_state["user"]["username"])
+
+        # Including this one. Signing every session out except the one
+        # pressing the button would be a control that does not do what it
+        # says, and this is the one case where the user's own session is
+        # the one they may most want gone.
+        forget_session()
+
+        st.session_state.pop("user", None)
+
+        st.rerun()
 
     section_header(t("change_password_header"))
 

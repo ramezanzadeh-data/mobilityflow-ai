@@ -95,6 +95,20 @@ def _hardcoded_strings():
             if getattr(node.func, "attr", None) not in USER_FACING_CALLS:
                 continue
 
+            # Match on what the method is called on, not only its name.
+            #
+            # "warning", "error" and "info" are Streamlit calls and
+            # logging calls both. logger.warning("could not read the
+            # browser session") is a line in a server log that no user
+            # ever sees, and reporting it as untranslated UI text is a
+            # false positive - the kind that gets a guard switched off,
+            # taking the real findings with it.
+            receiver = getattr(node.func, "value", None)
+            receiver_name = getattr(receiver, "id", None)
+
+            if receiver_name is not None and receiver_name != "st":
+                continue
+
             if not node.args:
                 continue
 

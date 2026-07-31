@@ -189,6 +189,47 @@ def case_statutory_dates(case_row):
     }
 
 
+def case_fields(case_row):
+    """
+    A case row as a mapping of column name to value.
+
+    Exists so that code outside this module can read a case by name
+    instead of by position. Positional access to case rows has already
+    produced one silent defect here - CASE_INDEX_ARRIVAL_DATE pointed at
+    tenant_id for as long as the statutory dates feature existed, and
+    every deadline reported "date not recorded" while looking correct.
+
+    The leading columns come from the CREATE TABLE and have never moved;
+    the trailing ones are read through the CASE_INDEX_* constants, which
+    tests/test_case_row_indices.py checks against load_case()'s own
+    SELECT. Short rows yield None rather than raising, matching
+    case_statutory_dates() above.
+    """
+
+    def at(index):
+        if case_row is None or len(case_row) <= index:
+            return None
+        return case_row[index]
+
+    return {
+        "id": at(0),
+        "employee_name": at(1),
+        "nationality": at(2),
+        "canton": at(3),
+        "permit": at(4),
+        "business_mode": at(5),
+        "employer": at(6),
+        "status": at(7),
+        "workflow_state": at(8),
+        "risk_level": at(9),
+        "arrival_date": at(CASE_INDEX_ARRIVAL_DATE),
+        "contract_start_date": at(CASE_INDEX_CONTRACT_START_DATE),
+        "permit_expiry_date": at(CASE_INDEX_PERMIT_EXPIRY_DATE),
+        "correspondence_language": at(CASE_INDEX_CORRESPONDENCE_LANGUAGE),
+        "commune": at(CASE_INDEX_COMMUNE),
+    }
+
+
 def init_db():
 
     with get_db_connection() as conn:
@@ -401,6 +442,10 @@ def init_db():
         # Also in _RLS_TABLES, and its foreign key needs `webhooks` to
         # exist - which it does, from the CREATE TABLE block above.
         _migrate_webhook_outbox(c)
+        # Its foreign key needs `refresh_tokens`, created in the block
+        # above. Deliberately not in _RLS_TABLES - see the migration file.
+        _migrate_session_handoff(c)
+        _migrate_session_idle_timeout(c)
         _enable_row_level_security(c)
         _seed_default_rbac(c)
 
@@ -527,6 +572,30 @@ def _migrate_webhook_outbox(c):
     """
 
     c.execute(_read_migration("0005_webhook_outbox.up.sql"))
+
+
+def _migrate_session_handoff(c):
+    """
+    Create the one-time codes that move a browser session into a cookie.
+
+    Streamlit cannot set an HttpOnly cookie; only the API can. See the
+    migration file for why the session token itself must not be the thing
+    that crosses the browser to get there.
+    """
+
+    c.execute(_read_migration("0008_session_handoff.up.sql"))
+
+
+def _migrate_session_idle_timeout(c):
+    """
+    Record when a browser session was last used.
+
+    Durable sessions meant closing the window stopped being a logout. See
+    the migration file for why this is a separate column rather than a
+    shorter expires_at.
+    """
+
+    c.execute(_read_migration("0009_session_idle_timeout.up.sql"))
 
 
 _TENANT_SCOPED_TABLES = [
@@ -1879,6 +1948,25 @@ def save_document_analysis(
             doc_id
         ))
 
+        # Whether the row was actually written.
+        #
+        # This UPDATE can match nothing and raise nothing. `documents` is
+        # under FORCE ROW LEVEL SECURITY with the tenant_isolation policy:
+        #
+        #     current_setting('app.current_tenant_id', true) = ''
+        #     OR tenant_id = NULLIF(current_setting(...), '')::integer
+        #
+        # A document whose tenant_id is NULL is invisible to a session
+        # that has a tenant set, because NULL = 3 is neither true nor
+        # false. The statement then updates zero rows and returns
+        # normally, so the caller reports success and the checklist item
+        # stays MISSING - which is exactly what a user reported.
+        #
+        # Reported rather than raised: the caller decides. Raising here
+        # would turn a recoverable "nothing changed" into a page crash on
+        # a screen the user was mid-task on.
+        return c.rowcount > 0
+
 
 def get_document_extracted_text(doc_id):
 
@@ -2511,9 +2599,21 @@ def create_refresh_token(username, token_hash, tenant_id, expires_at, user_agent
 
         c = conn.cursor()
 
+        # last_seen_at is set here, not left to the first touch.
+        #
+        # apps/web/session._has_gone_idle() fails closed: an absent
+        # last_seen_at counts as idle. A row inserted without one is
+        # therefore an already-abandoned session at the instant it is
+        # created, and the symptom is precise and baffling - sign in,
+        # refresh, and you are back at the login form, every time,
+        # while the same session works fine if you happen to click
+        # around for a minute first.
+        #
+        # Creating a session is using it. The value belongs in the same
+        # statement as the row rather than in whatever runs next.
         c.execute("""
-        INSERT INTO refresh_tokens (username, token_hash, tenant_id, issued_at, expires_at, revoked, user_agent)
-        VALUES (%s, %s, %s, to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS'), %s, 0, %s)
+        INSERT INTO refresh_tokens (username, token_hash, tenant_id, issued_at, expires_at, revoked, user_agent, last_seen_at)
+        VALUES (%s, %s, %s, to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS'), %s, 0, %s, NOW())
         RETURNING id
         """, (username, token_hash, tenant_id, expires_at, user_agent))
 
@@ -2584,6 +2684,193 @@ def list_active_sessions(username):
         rows = c.fetchall()
 
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------
+# Browser session handoff (migration 0008)
+# ---------------------------------------------------------------------
+#
+# Four statements, and the interesting property is in the second one. See
+# db/migrations/0008_session_handoff.up.sql for why the table exists at
+# all.
+
+
+def create_session_handoff(code_hash, username, expires_at):
+    """
+    Record a one-time code that redeems into a browser session.
+
+    ``expires_at`` is a timezone-aware datetime, seconds in the future.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        INSERT INTO session_handoff (code_hash, username, expires_at)
+        VALUES (%s, %s, %s)
+        RETURNING id
+        """, (code_hash, username, expires_at))
+
+        return c.fetchone()[0]
+
+
+def consume_session_handoff(code_hash):
+    """
+    Claim a handoff code, or return None.
+
+    Single-use is enforced by the database, not by the caller. The row is
+    read and marked spent by the same UPDATE, so two requests presenting
+    the same code cannot both be served it: the second one's WHERE clause
+    no longer matches and it returns no row.
+
+    Doing this as SELECT-then-UPDATE would leave a window - short, but
+    reachable by anyone who can replay a request twice quickly - in which
+    one code mints two sessions.
+
+    Returns {"id": ..., "username": ...} or None. None covers unknown,
+    already spent and expired without distinguishing between them; the
+    caller has nothing useful to do with the difference and the browser
+    has no business learning it.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        c.execute("""
+        UPDATE session_handoff
+           SET consumed_at = now()
+         WHERE code_hash = %s
+           AND consumed_at IS NULL
+           AND expires_at > now()
+     RETURNING id, username
+        """, (code_hash,))
+
+        row = c.fetchone()
+
+    return dict(row) if row else None
+
+
+def touch_session(token_hash):
+    """
+    Record that a browser session is still being used.
+
+    Written at most once a minute per session - see apps/web/session.py -
+    because the caller runs on every Streamlit rerun, which is every
+    click. One UPDATE per click would make an idle-timeout column the
+    busiest write in the product.
+
+    Revoked rows are excluded rather than updated and then ignored: a
+    logged-out session must not be able to keep itself alive.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute(
+            "UPDATE refresh_tokens SET last_seen_at=now() "
+            "WHERE token_hash=%s AND revoked=0",
+            (token_hash,),
+        )
+
+        return c.rowcount > 0
+
+
+def touch_session_for_handoff(code_hash):
+    """
+    The same, for a session this page load created and cannot name.
+
+    st.context.cookies reports only what arrived with the websocket
+    handshake, so the tab that just signed in does not know its own
+    session token until the next full page load. Without this, someone
+    who logs in and then works for an hour without refreshing is idle by
+    the clock and active in fact - and is signed out the moment they do
+    refresh.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        UPDATE refresh_tokens
+           SET last_seen_at = now()
+         WHERE revoked = 0
+           AND id = (
+                SELECT session_id FROM session_handoff WHERE code_hash = %s
+               )
+        """, (code_hash,))
+
+        return c.rowcount > 0
+
+
+def link_session_handoff(handoff_id, session_id):
+    """
+    Record which browser session a redeemed code produced.
+
+    This is what lets Log out revoke that session server-side in the same
+    page load that created it, when st.context.cookies cannot yet see the
+    cookie - see the migration file.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute(
+            "UPDATE session_handoff SET session_id=%s WHERE id=%s",
+            (session_id, handoff_id),
+        )
+
+
+def revoke_session_for_handoff(code_hash):
+    """
+    Revoke the browser session a handoff code minted.
+
+    Returns True if a session was revoked. False means there was nothing
+    to revoke, which is the normal result when the code was never
+    redeemed - not an error.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        UPDATE refresh_tokens
+           SET revoked = 1
+         WHERE id = (
+                SELECT session_id FROM session_handoff WHERE code_hash = %s
+               )
+        """, (code_hash,))
+
+        return c.rowcount > 0
+
+
+def purge_expired_session_handoffs(older_than_days=30):
+    """
+    Delete handoff rows that can no longer do anything.
+
+    Kept well past expiry rather than deleted on redemption, because
+    session_id is read for the life of the browser session it names. The
+    cutoff is therefore a session lifetime with a wide margin, not the
+    thirty seconds the code itself was valid for.
+
+    Returns the number of rows removed.
+    """
+
+    with get_db_connection() as conn:
+
+        c = conn.cursor()
+
+        c.execute("""
+        DELETE FROM session_handoff
+         WHERE expires_at < now() - make_interval(days => %s)
+        """, (older_than_days,))
+
+        return c.rowcount
 
 
 def set_mfa_secret(username, secret):

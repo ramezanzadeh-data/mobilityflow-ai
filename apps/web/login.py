@@ -1,5 +1,12 @@
 import streamlit as st
 
+from apps.web.session import (
+    emit_pending_browser_updates,
+    forget_session,
+    keep_session_alive,
+    remember_session,
+    restore_session,
+)
 from auth.service import authenticate_user
 from db.database import set_current_tenant, get_or_create_tenant
 from i18n.translator import (
@@ -93,6 +100,11 @@ def login():
                 "must_change_password": bool(user.get("must_change_password")),
             }
 
+            # So a page refresh does not undo the thing that just
+            # happened. Best-effort by design: if the session row cannot
+            # be written, the login still stands - see remember_session().
+            remember_session(st.session_state["user"])
+
             st.success(t("login_success"))
             st.rerun()
 
@@ -103,12 +115,63 @@ def login():
 
 def require_login():
 
+    # First, and on both branches below.
+    #
+    # Signing in and signing out each need one HTTP request that
+    # Streamlit cannot make - setting and deleting the session cookie -
+    # and each ends in st.rerun(), which throws away whatever the
+    # interrupted run had queued. So the request is made here, on the run
+    # after the one that asked for it, whether that run ends up showing
+    # the application or the login form.
+    emit_pending_browser_updates()
+
+    # A refresh gives Streamlit a brand-new session with an empty
+    # session_state, so the in-memory user is gone through no fault of
+    # the person at the keyboard. Before concluding they are signed out,
+    # ask the durable store - see apps/web/session.py for why the answer
+    # lives in Postgres and what the session cookie does and does not
+    # carry.
+    if "user" not in st.session_state:
+
+        restored = restore_session()
+
+        if restored:
+            st.session_state["user"] = restored
+
     if "user" not in st.session_state:
         login()
         st.stop()
+
+    # Past this line somebody is signed in and doing something, which is
+    # the definition of not idle. Recorded on every rerun so that a
+    # session ends when the person leaves rather than a fixed time after
+    # they arrived - the write itself is throttled to once a minute
+    # inside keep_session_alive().
+    keep_session_alive()
 
     # Streamlit reruns this script on every interaction, potentially on a
     # different worker thread each time - re-pin the DB-level tenant
     # context every rerun so Postgres RLS stays correctly scoped for
     # whichever thread is executing this particular run.
     set_current_tenant(st.session_state["user"].get("tenant_id"))
+
+
+def logout():
+    """
+    End the session everywhere it is recorded.
+
+    Both halves are required. Dropping the in-memory user without
+    revoking the stored session would leave the cookie - and, while the
+    fallback exists, the URL in the browser's history - still working;
+    revoking without clearing session_state would leave this tab signed
+    in. Either one alone makes Log out a button that does not do what it
+    says.
+
+    forget_session() revokes server-side and does not rely on the browser
+    for any of it, so a blocked request or a tab closed mid-logout cannot
+    leave a live session behind.
+    """
+
+    forget_session()
+
+    st.session_state.pop("user", None)

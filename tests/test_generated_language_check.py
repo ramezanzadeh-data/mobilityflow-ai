@@ -139,3 +139,59 @@ def test_nothing_is_expected_means_nothing_is_warned():
 
     assert looks_like_the_wrong_language(GERMAN, None) is False
     assert looks_like_the_wrong_language(GERMAN, "") is False
+
+
+# ------------------------------------------------ foreign closing formulas ---
+
+def test_a_german_sign_off_on_an_english_letter_is_caught():
+    """
+    Reported directly: an English email ending "Mit freundlichen Grüßen".
+
+    Function-word counting cannot see this - the English body wins the
+    count by a wide margin - yet the sign-off is the first thing a
+    recipient reads. It needs its own check.
+    """
+
+    from core.communication.language_check import foreign_phrases
+
+    letter = ENGLISH + "\n\nMit freundlichen Grüßen,\n[Your Name]"
+
+    assert detect_language(letter) == "en"
+
+    assert foreign_phrases(letter, "en") == [("de", "mit freundlichen grüßen")]
+    assert looks_like_the_wrong_language(letter, "en") is True
+
+
+def test_the_swiss_spelling_of_the_same_formula_is_caught_too():
+    """
+    Switzerland writes ss, not ß. Both spellings are the same mistake
+    here - a German closing on an English letter - so both are detected.
+    """
+
+    from core.communication.language_check import foreign_phrases
+
+    letter = ENGLISH + "\n\nMit freundlichen Grüssen"
+
+    assert foreign_phrases(letter, "en")
+    assert looks_like_the_wrong_language(letter, "en") is True
+
+
+def test_a_french_closing_on_an_english_letter_is_caught():
+
+    letter = ENGLISH + "\n\nVeuillez agréer, Madame, Monsieur, mes salutations."
+
+    assert looks_like_the_wrong_language(letter, "en") is True
+
+
+def test_the_formula_of_the_requested_language_is_not_flagged():
+    """
+    The property that keeps this usable. A German letter is supposed to
+    end "Mit freundlichen Grüssen".
+    """
+
+    from core.communication.language_check import foreign_phrases
+
+    letter = GERMAN + "\n\nMit freundlichen Grüssen"
+
+    assert foreign_phrases(letter, "de") == []
+    assert looks_like_the_wrong_language(letter, "de") is False

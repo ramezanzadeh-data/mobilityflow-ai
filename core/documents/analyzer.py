@@ -31,7 +31,22 @@ def analyze_documents(case, documents):
     # establishes - a compliance claim invented in a docstring-free
     # if-statement and shown to the user as a risk.
     if canton == "VALAIS":
-        missing.append("Commune Registration Form")
+
+        # The existence check was absent here, and only here. Every other
+        # requirement above is guarded by `if not any(...)`; this one
+        # appended unconditionally, so Commune Registration Form was
+        # reported missing on every Valais case forever - including
+        # immediately after the user uploaded it.
+        #
+        # It reads as a small omission and was not. The product is Valais
+        # only, so every case in it carried one requirement that could
+        # never be discharged: the compliance score could not reach 100,
+        # the checklist could not be cleared, and any gate that asks
+        # "are all documents present" answered no permanently. The user's
+        # own upload was the correction that never took effect.
+        if not any("commune registration" in doc[2].lower() for doc in documents):
+            missing.append("Commune Registration Form")
+
         risks.append("Valais requires commune registration")
 
 

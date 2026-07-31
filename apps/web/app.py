@@ -10,7 +10,19 @@ load_environment()
 
 import streamlit as st  # noqa: E402  (deliberate - see above)
 
-from apps.web.login import language_selector, require_login  # noqa: E402
+from apps.web.login import language_selector, logout, require_login  # noqa: E402
+from apps.web.state.navigation import (  # noqa: E402
+    remember_navigation,
+    restore_navigation,
+)
+# Aliased, because db.schema_check exports a describe_problems() too and
+# the two answer different questions - one about the database, one about
+# the environment. Importing both unaliased would leave whichever came
+# last silently shadowing the other.
+from bootstrap.config_check import (  # noqa: E402
+    describe_problems as describe_config_problems,
+    find_config_problems,
+)
 from db.schema_check import (  # noqa: E402
     describe_problems,
     find_schema_problems,
@@ -44,6 +56,26 @@ st.set_page_config(page_title="MobilityFlow AI", layout="wide")
 # here now sit alongside every other rule in components/theme.py, so there
 # is a single place to change a colour or a spacing step.
 inject_theme()
+
+# Before anything else, because it is the cheapest of the three failures
+# to diagnose and the only one that is otherwise completely silent.
+#
+# A misspelt MOBILITYFLOW_* variable is ignored, so the deployment runs
+# with a default while its .env says otherwise. That is how this check
+# came to exist: MOBILITYFLOW_SESSION_URL_FALLBACK=2 in a .env file,
+# meant for the idle timeout, naming a setting that no longer existed -
+# and an idle timeout that was therefore never configured, in a
+# deployment that had every reason to believe it was.
+_config_problems = find_config_problems()
+
+if _config_problems:
+
+    st.error(t("config_unknown_title"))
+
+    st.code(describe_config_problems(_config_problems), language="text")
+
+    st.stop()
+
 
 # Before the login form, so a stale database is reported to whoever is
 # deploying rather than to whoever happens to submit the first form that
@@ -105,8 +137,14 @@ page_labels = {
 }
 
 
-if "page" not in st.session_state:
-    st.session_state["page"] = "Dashboard"
+# From the URL, not from a default.
+#
+# The login survives a refresh now; the page did not, so a refresh
+# returned the user to Dashboard from wherever they were reading. Case
+# Detail lost the case as well - `selected_case` sits in the same
+# in-memory session_state. See apps/web/state/navigation.py, including
+# why the case id in the URL is not an authorisation boundary.
+restore_navigation(pages, default="Dashboard")
 
 
 # Above the navigation, not below it: this changes the labels of
@@ -136,6 +174,32 @@ page = st.sidebar.radio(
 )
 
 st.session_state["page"] = page
+
+
+# The address bar describes what is on screen, so the next refresh lands
+# here rather than on Dashboard. Written after the radio is read, and on
+# every run, so it can never fall out of step with the state it mirrors.
+remember_navigation()
+
+
+# Sign out.
+#
+# There was no way to do this before, and until now it did not show:
+# the session lived only in the server's memory, so closing the tab ended
+# it. Sessions are durable now - that is the point of the change - which
+# turns the missing control into a real problem. A shared or public
+# machine would otherwise stay signed in until the session expired on its
+# own, and the person who wanted to leave would have no way to make it
+# happen.
+st.sidebar.divider()
+
+with st.sidebar:
+
+    st.caption(st.session_state["user"]["username"])
+
+    if st.button(t("logout_button"), use_container_width=True):
+        logout()
+        st.rerun()
 
 
 if page == "Create Case":
