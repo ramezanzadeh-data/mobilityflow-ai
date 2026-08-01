@@ -1,0 +1,34 @@
+# Line endings, decided by the repository rather than by whoever cloned it.
+#
+# Without this, git shows every file as modified the moment an editor on
+# Windows rewrites it with CRLF - 109 files at once, none of them
+# containing a single changed character. A diff that large is not read,
+# and a real change hidden inside it is not seen either.
+#
+# LF everywhere, including in the working tree, because everything here
+# runs on Linux: the application in its containers, the test suite in CI.
+# A Windows checkout that produced CRLF would be writing files for a
+# platform this project never executes on.
+#
+# Applying this to an existing clone needs one command, once:
+#
+#     git add --renormalize .
+#     git commit -m "Normalise line endings"
+#
+# After that the question does not come up again.
+
+* text=auto eol=lf
+
+# Binary. Never converted, never diffed as text - a "corrected" line
+# ending inside a PNG is a corrupted PNG.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.docx binary
+*.pptx binary
+*.zip binary
+*.gz binary
